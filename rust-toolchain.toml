@@ -1,0 +1,4 @@
+[toolchain]
+# Pin so local, builder and CI agree. llvm-tools-preview backs cargo-llvm-cov.
+channel = "1.95.0"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

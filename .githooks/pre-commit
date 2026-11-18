@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# The gate is bl-gate (machine tooling); see AGENTS.md "The gate". Only the
+# REF check lives here: no direct commits to main; the squash from `bl close`
+# is permitted (MERGE_MSG/SQUASH_MSG). Seat with `make install-hooks`.
+set -euo pipefail
+
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+git_dir="$(git rev-parse --git-dir)"
+
+case "$branch" in
+  main|master)
+    if [ ! -f "$git_dir/MERGE_MSG" ] && [ ! -f "$git_dir/SQUASH_MSG" ]; then
+      echo "error: direct commits to '$branch' are not permitted." >&2
+      echo "       use 'bl claim <task>' to work in a worktree, then 'bl close'." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+exec bl-gate "$@"

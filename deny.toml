@@ -1,0 +1,20 @@
+# cargo-deny supply-chain policy. Verified against cargo-deny 0.20.2.
+#
+# The crate has no dependencies, so every list below is as short as the tree
+# justifies. An entry that matches nothing makes `cargo deny check` warn on
+# every run; add one only with the dependency that needs it.
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# The crate's own expression, "MIT OR Apache-2.0"; the check covers it too.
+allow = ["MIT", "Apache-2.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

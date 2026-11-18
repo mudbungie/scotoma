@@ -1,0 +1,77 @@
+name: CI
+
+# The gate, run by a machine. `make check` is the whole of it and nothing here
+# restates a step: the Makefile is the build authority. `make package` rides
+# beside it because a release needs the `.crate` contents leak-scanned BEFORE
+# anything is published.
+on:
+  # Deliberately NO push arm: a push to `main` runs this once, as the instance
+  # `release-plz.yml` CALLS inside its own run. A push arm would run it twice.
+  pull_request:
+  # The reusable entry point. crates.io trusted publishing REFUSES an OIDC
+  # token minted under a `workflow_run` trigger; a CALLED workflow executes
+  # inside the caller's run, so the gate and the release share one run.
+  workflow_call:
+  # How the release PR gets its checks: release-plz opens that PR with
+  # `GITHUB_TOKEN`, and GitHub starts no `pull_request` run for an event that
+  # token caused. `release-plz.yml` dispatches this workflow on the release
+  # branch, and the `verdict` job below puts the result on the PR.
+  workflow_dispatch:
+
+# CI reads the tree and writes nothing back. Every action is pinned to a full
+# commit SHA with its tag in the trailing comment: a tag can be repointed.
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the compiler, so the first cargo invocation
+      # auto-installs it with its components.
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install dev tooling
+        run: make setup
+
+      - name: The gate (make check)
+        run: make check
+
+      - name: Package (build the .crate + leak scan of its contents)
+        run: make package
+
+  # A dispatched run's checks stay OFF the pull request, but a commit STATUS is
+  # always in the rollup, so the verdict is restated as one — the same context
+  # the dispatching step set to `pending`. Dispatch-only.
+  verdict:
+    name: report the verdict as a commit status
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
+    needs: [gates]
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Post the status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ needs.gates.result == 'success' && 'success' || 'failure' }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+            -f state="$STATE" -f context="CI" \
+            -f description="make check, make package" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

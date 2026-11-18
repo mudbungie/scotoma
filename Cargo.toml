@@ -1,0 +1,43 @@
+[package]
+name = "scotoma"
+version = "0.0.1"
+edition = "2024"
+description = "A blind spot for agents: store secrets, hand out opaque handles, substitute the value only at execution, and redact it from everything the model could read."
+repository = "https://github.com/mudbungie/scotoma"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["secrets", "agents", "redaction", "credentials", "cli"]
+categories = ["command-line-utilities", "authentication", "development-tools"]
+# MSRV = the pinned toolchain (rust-toolchain.toml).
+rust-version = "1.95"
+# An ALLOWLIST, never `exclude`: what is not named here is not published.
+# Patterns are gitignore-style, so a bare filename needs its leading `/`.
+include = ["/src/**", "/README.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
+
+# No dependencies, and that is a state to keep: a secrets tool's supply chain
+# is the standard library.
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# Panic paths. Pedantic does not include these.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+# The one sanctioned allow-list; there is no inline `#[allow]`.
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

@@ -1,0 +1,240 @@
+name: Release-plz
+
+# Build-gated release. The flow, end to end:
+#
+#   land work on main -> this run gates the tree (`ci`) and keeps ONE release PR
+#   fresh, with the gate run on the PR's own head -> merge the release PR (the
+#   human control point) -> this run gates the merged tree -> on green: tag
+#   `v<version>`, GitHub Release, `cargo publish`.
+#
+# THE JOBS.
+#
+#   * ci — the whole CI workflow, executed HERE (`uses: ./.github/workflows/
+#     ci.yml`), never observed from a distance. Not a `workflow_run` arm
+#     waiting on a separate CI run: crates.io trusted publishing refuses an
+#     OIDC token minted under that trigger, and a called workflow keeps the gate
+#     and the release in one run joined by `needs:`.
+#   * release-plz PR (push to main only) — opens or refreshes the release PR
+#     (version bump in Cargo.toml/Cargo.lock, CHANGELOG.md entry), then
+#     DISPATCHES ci.yml on the release branch. The dispatch is the fix for the
+#     PR whose checks never ran: release-plz opens the PR with `GITHUB_TOKEN`,
+#     and GitHub starts no `pull_request` run for an event that token caused —
+#     it creates the run in `action_required`, gives it no job, and expires it
+#     red 30 days later ("likely failed because of a workflow file issue").
+#     `workflow_dispatch` is the one event that token may cause. Its checks
+#     stay off the PR too, so the verdict travels as a commit status named
+#     `CI`: `pending` from this job, the result from ci.yml's `verdict` job.
+#     No PAT, no stored secret.
+#   * release (`needs: ci`) — releases the manifest version if the registry
+#     does not serve it yet, and ONLY from the commit `ci` judged.
+#   * prune — deletes every `release-plz-*` branch with no open PR, and the
+#     dead `action_required` run each release PR leaves behind.
+#
+# REGISTRY AUTH. The release job holds `id-token: write`, so release-plz can
+# trade a GitHub OIDC token for a short-lived crates.io token (trusted
+# publishing) — once the crate's owner registers this workflow at
+# https://crates.io/crates/scotoma/settings (Trusted Publishing: owner
+# `mudbungie`, repository `scotoma`, workflow `release-plz.yml`, no environment).
+# THE FILENAME IS MATCHED LITERALLY: renaming this file breaks that. Until
+# then the `CARGO_REGISTRY_TOKEN` repo secret is used when it exists; deleting
+# the secret is the whole switch to OIDC, no edit here.
+#
+# One-time repo setup: Settings -> Actions -> General -> "Allow GitHub Actions
+# to create and approve pull requests" (else the release-PR job 403s).
+#
+# Bumps default to PATCH; see release-plz.toml for the `[minor]`/`[major]`
+# opt-in markers.
+
+on:
+  push:
+    branches: [main]
+  # The re-judge door: the same chain (ci -> release) by hand.
+  workflow_dispatch:
+
+# Read by default; each job that writes says so. Job-level `permissions`
+# REPLACE this block. Third-party actions are pinned to a full commit SHA.
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    # Owner guard: never runs in a fork. Neither trigger is reachable from a
+    # fork PR, which fires `pull_request` — not requested here.
+    if: github.repository_owner == 'mudbungie'
+    # A `uses:` job's permissions are the ceiling for the called workflow, and
+    # GitHub validates every job in it against that ceiling whether or not it
+    # will run: ci.yml's dispatch-only `verdict` job asks for `statuses: write`.
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/ci.yml
+
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'mudbungie' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+      # To dispatch ci.yml on the release branch...
+      actions: write
+      # ...and mark the PR head `pending` until that run reports.
+      statuses: write
+    # Never two release-PR updates at once — they would race on the branch.
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # release-plz reads the whole history to decide the next version.
+          fetch-depth: 0
+      - name: Run release-plz
+        id: release-plz
+        # v0.5.131 installs release-plz 0.3.160; 0.3.172-0.3.174 fail every
+        # changelog render ("stack limit reached").
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release-pr
+        env:
+          # No registry credential: this job publishes nothing.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run the gate on the release PR's head
+        if: steps.release-plz.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.release-plz.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch="$(jq -r '.head_branch' <<<"$PR")"
+          sha="$(gh api "repos/$GH_REPO/git/ref/heads/$branch" -q '.object.sha')"
+          echo "dispatching ci.yml on $branch ($sha)"
+          gh workflow run ci.yml --ref "$branch"
+          gh api "repos/$GH_REPO/statuses/$sha" -f state=pending -f context=CI \
+            -f description="ci.yml dispatched on the release branch"
+
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    # THE BUILD GATE, and the whole of it: a failed or skipped `ci` skips this.
+    needs: ci
+    if: github.repository_owner == 'mudbungie'
+    permissions:
+      # To push the `v<version>` tag and cut the GitHub Release.
+      contents: write
+      # The trusted-publishing grant, on this job alone.
+      id-token: write
+    concurrency:
+      group: release-plz-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          # The BRANCH, not the run's sha: release-plz resolves the current
+          # branch through `@{upstream}`, which fails on a detached HEAD.
+          ref: ${{ github.ref_name }}
+      # ...and a branch checkout takes main's tip, which may have moved past
+      # the commit `ci` judged. Releasing that would publish a tree nothing in
+      # this run gated. So
+      # only the judged commit releases; a newer tip has its own run, whose
+      # gate is the one that counts.
+      - name: Release only the commit the gate judged
+        id: gated
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ]; then
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main moved past the gated $GITHUB_SHA; the newer push's run releases"
+          fi
+      # Deleting the secret is the switch to trusted publishing: with no token
+      # in its environment release-plz does the OIDC exchange itself.
+      - name: Choose the registry credential
+        if: steps.gated.outputs.fresh == 'true'
+        env:
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+            echo "registry auth: the stored token"
+          else
+            echo "registry auth: trusted publishing (OIDC)"
+          fi
+      - name: Run release-plz
+        if: steps.gated.outputs.fresh == 'true'
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  prune-release-branches:
+    name: prune superseded release branches
+    # After the release-PR job RAN — succeeded or failed — and after nothing
+    # else. release-plz pushes its timestamped branch BEFORE opening the PR, so
+    # a failed PR job is exactly how a branch is stranded; a bare `needs` would
+    # skip this job then. `!cancelled()` is what drops the implicit success().
+    needs: release-plz-pr
+    if: >-
+      ${{ !cancelled()
+      && (needs.release-plz-pr.result == 'success'
+      || needs.release-plz-pr.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      # To delete the dead runs below.
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Runs right after the PR job, so the branch backing the CURRENT release
+      # PR already has its PR open: "has no open PR" is an exact test for
+      # "superseded or orphaned". The open-PR set is the single source of truth.
+      - name: Delete every release-plz-* branch with no open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # A FAILED listing must never be read as "nothing is open" — that
+          # would delete the live release PR's branch too.
+          if ! open="$(gh pr list --state open --json headRefName -q '.[].headRefName')"; then
+            echo "::error::gh pr list failed — refusing to prune any branch" >&2
+            exit 1
+          fi
+          git ls-remote --heads origin 'refs/heads/release-plz-*' |
+            awk '{print $2}' | sed 's#refs/heads/##' |
+            while read -r branch; do
+              if grep -qxF "$branch" <<<"$open"; then
+                echo "keep    $branch (backs an open PR)"
+              else
+                echo "delete  $branch"
+                git push origin --delete "$branch"
+              fi
+            done
+      # The `pull_request` run GitHub creates for each release PR and never
+      # starts (see the header). Left alone it turns red when its branch goes,
+      # one permanent failure per release standing beside the real ones. The
+      # dispatched run is the PR's real verdict, so nothing is lost. Scoped
+      # three ways: this repository's own release-plz-* heads only (a fork
+      # PR waiting for approval looks the same and is NOT ours to delete),
+      # still `action_required`, and ZERO jobs.
+      - name: Delete the release PR's never-started pull_request run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/runs?event=pull_request&status=action_required" \
+            -q ".workflow_runs[]
+                | select(.head_repository.full_name == \"$GH_REPO\")
+                | select(.head_branch | startswith(\"release-plz-\"))
+                | .id" |
+            while read -r run; do
+              ran="$(gh api "repos/$GH_REPO/actions/runs/$run/jobs" -q '.total_count')"
+              if [ "$ran" -eq 0 ]; then
+                echo "deleting run $run: action_required, zero jobs"
+                gh api -X DELETE "repos/$GH_REPO/actions/runs/$run"
+              fi
+            done
