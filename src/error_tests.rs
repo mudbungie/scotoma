@@ -18,4 +18,6 @@ fn every_variant_says_what_went_wrong() {
         "no secret named \"k\""
     );
     assert_eq!(Error::Empty.to_string(), "a secret value may not be empty");
+    let leak = Error::Leak("k".into()).to_string();
+    assert_eq!(leak, "secret \"k\" found in outgoing content");
 }

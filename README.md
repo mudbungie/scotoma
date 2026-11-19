@@ -45,6 +45,7 @@ usage: scotoma COMMAND
   issue NAME        print a new handle for a secret
   sub               copy stdin to stdout, each handle replaced by its secret
   redact            copy stdin to stdout, each secret value replaced by [scotoma:NAME]
+  guard             copy stdin to stdout; fail at the first secret value
   run CMD [ARG...]  run CMD with handles in its arguments replaced by their
                     secrets, and its stdout and stderr redacted
 
@@ -56,7 +57,7 @@ environment:
 exit: 0 done, 1 failed, 2 usage; `run` exits as CMD did.
 ```
 
-`sub` and `redact` are streaming filters: output is flushed as it is decided,
+`sub`, `redact` and `guard` are streaming filters: output is flushed as it is decided,
 and a match that straddles two reads is still a match. A secret value is
 never accepted or printed as an argument, only through stdin.
 
@@ -69,9 +70,14 @@ vault.set("api-password", "hunter2")?;
 let handle = vault.issue("api-password")?;          // safe to show a model
 let command = vault.substitute(&model_command)?;    // carries the secret: execute, never store
 let shown = vault.redact(&command_output)?;         // safe to show a model
+vault.check(&request_body)?;                        // Err(Leak) means: do not send
 ```
 
-`Scotoma::substituter()` and `Scotoma::redactor()` return a `Stream`
+`redact` rewrites; `check` refuses. Redact what a tool printed, so the
+transcript stays clean; check what is about to be sent to the model, so a
+secret that got past everything else stops the request instead of leaving.
+
+`Scotoma::substituter()`, `redactor()` and `guard()` return a `Stream`
 (`push(&[u8])`, `finish()`) for data that arrives in pieces. That is the whole
 API. A vault caches nothing, so any number of processes can share one: a
 handle issued in one process substitutes in another.
@@ -82,13 +88,14 @@ handle issued in one process substitutes in another.
   directory. The name is the path.
 - **The usage log** is `audit.tsv`, append-only, one line per act:
   `unix-seconds  actor  event  secret-name  handle`. Events are `set`,
-  `remove`, `issue`, `use` (a handle was replaced by a value) and `redact` (a
-  value was caught on its way out).
+  `remove`, `issue`, `use` (a handle was replaced by a value), `redact` (a
+  value was rewritten) and `leak` (a guard refused content holding a value).
 - **Handles** are stored nowhere else. A handle is valid because its `issue`
   line is in the log, and it stands for the secret's *current* value until the
   secret is removed.
-- **Matching is exact**, leftmost-longest. Redaction also matches a value as
-  it reads inside a JSON string, so a serialized request body can be scanned.
+- **Matching is exact**, leftmost-longest. Redaction and the guard also match
+  a value as it reads inside a JSON string, so a serialized request body can
+  be scanned.
 - **A use is logged before its bytes are released.** If the log cannot be
   written, nothing is substituted.
 

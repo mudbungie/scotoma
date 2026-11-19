@@ -196,6 +196,12 @@ fn a_secret_goes_in_by_stdin_and_comes_out_only_through_a_handle() {
         home.run(&["redact"], b"saw hunter2\n").out,
         "saw [scotoma:pw]\n"
     );
+    assert_eq!(home.run(&["guard"], b"clean\n").out, "clean\n");
+    let caught = home.run(&["guard"], b"saw hunter2\n");
+    assert!(
+        failed(&caught) && caught.err.contains("\"pw\""),
+        "{caught:?}"
+    );
     assert_eq!(home.run(&["rm", "pw"], b"").code, 0);
     assert_eq!(home.run(&["ls"], b"").out, "");
 }
@@ -242,6 +248,7 @@ fn failures_exit_1_and_say_why() {
     home.break_store();
     assert!(failed(&home.run(&["ls"], b"")));
     assert!(failed(&home.run(&["redact"], b"x")));
+    assert!(failed(&home.run(&["guard"], b"x")));
     assert!(failed(&home.run(&["run", "true"], b"")));
 }
 

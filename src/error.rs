@@ -13,6 +13,8 @@ pub enum Error {
     Unknown(String),
     /// A secret value may not be empty.
     Empty,
+    /// The named secret's value was found in content passed to a guard.
+    Leak(String),
     /// The filesystem (or a stream) said no; `context` names what was touched.
     Io { context: String, source: io::Error },
 }
@@ -31,6 +33,7 @@ impl fmt::Display for Error {
             Self::Name(name) => write!(f, "invalid name {name:?}: use 1-128 of A-Z a-z 0-9 . _ -"),
             Self::Unknown(name) => write!(f, "no secret named {name:?}"),
             Self::Empty => write!(f, "a secret value may not be empty"),
+            Self::Leak(name) => write!(f, "secret {name:?} found in outgoing content"),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }

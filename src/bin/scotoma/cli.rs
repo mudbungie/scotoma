@@ -14,6 +14,7 @@ usage: scotoma COMMAND
   issue NAME        print a new handle for a secret
   sub               copy stdin to stdout, each handle replaced by its secret
   redact            copy stdin to stdout, each secret value replaced by [scotoma:NAME]
+  guard             copy stdin to stdout; fail at the first secret value
   run CMD [ARG...]  run CMD with handles in its arguments replaced by their
                     secrets, and its stdout and stderr redacted
 
@@ -74,6 +75,7 @@ fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>
         ["issue", name] => write(streams.out, format!("{}\n", vault.issue(name)?).as_bytes())?,
         ["sub"] => pump(streams.input, &mut vault.substituter()?, streams.out)?,
         ["redact"] => pump(streams.input, &mut vault.redactor()?, streams.out)?,
+        ["guard"] => pump(streams.input, &mut vault.guard()?, streams.out)?,
         ["run", command @ ..] if !command.is_empty() => {
             return exec::run(&vault, command, streams.out, streams.err).map(Some);
         }

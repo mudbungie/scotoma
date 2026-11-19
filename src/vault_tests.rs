@@ -124,6 +124,23 @@ fn redaction_names_the_secret_and_logs_the_catch() {
 }
 
 #[test]
+fn a_guard_passes_clean_content_and_refuses_a_secret() {
+    let scratch = Scratch::new();
+    let vault = vault(&scratch);
+    vault.set("pw", "hunter2").unwrap();
+    vault.set("key", "say \"hi\"").unwrap();
+    assert!(vault.check("nothing to see").is_ok());
+    assert!(matches!(vault.check("it is hunter2"), Err(Error::Leak(name)) if name == "pw"));
+    let body = r#"{"content":"say \"hi\""}"#;
+    assert!(matches!(vault.check(body), Err(Error::Leak(name)) if name == "key"));
+    assert_eq!(log(&scratch).split_off(2), ["leak pw -", "leak key -"]);
+
+    let mut guard = vault.guard().unwrap();
+    assert_eq!(guard.push(b"clean, then hun").unwrap(), b"clean, then ");
+    assert!(matches!(guard.push(b"ter2 and more"), Err(Error::Leak(_))));
+}
+
+#[test]
 fn json_escapes_as_the_serializers_do() {
     assert_eq!(json("plain"), "plain");
     assert_eq!(
@@ -158,6 +175,7 @@ fn nothing_is_released_when_the_log_cannot_be_written() {
         Err(Error::Io { .. })
     ));
     assert!(matches!(vault.redact("hunter2"), Err(Error::Io { .. })));
+    assert!(matches!(vault.check("hunter2"), Err(Error::Io { .. })));
     assert!(matches!(vault.substitute(&handle), Err(Error::Io { .. })));
     assert!(matches!(vault.issue("pw"), Err(Error::Io { .. })));
     assert!(matches!(vault.set("pw", "v"), Err(Error::Io { .. })));
@@ -172,6 +190,7 @@ fn a_broken_store_is_an_error_everywhere() {
     assert!(matches!(vault.names(), Err(Error::Io { .. })));
     assert!(matches!(vault.substitute("x"), Err(Error::Io { .. })));
     assert!(matches!(vault.redact("x"), Err(Error::Io { .. })));
+    assert!(matches!(vault.check("x"), Err(Error::Io { .. })));
     assert!(matches!(vault.set("bad name", "v"), Err(Error::Name(_))));
     assert!(matches!(vault.remove("absent"), Err(Error::Io { .. })));
 }

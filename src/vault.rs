@@ -91,13 +91,28 @@ impl Scotoma {
                     handle,
                 })
             });
-        Ok(self.stream(entries.collect(), "use"))
+        Ok(self.stream(entries.collect(), "use", false))
     }
 
     /// A stream that replaces every stored secret value with
     /// `[scotoma:NAME]`. The value is matched as stored and as it appears
     /// inside a JSON string.
     pub fn redactor(&self) -> Result<Stream, Error> {
+        Ok(self.stream(self.values()?, "redact", false))
+    }
+
+    /// A stream that passes clean content through unchanged and fails with
+    /// [`Error::Leak`] at the first stored secret value. Put it in front of
+    /// anything that sends content to a model: a hit means do not send.
+    /// Bytes ahead of the hit, which hold no secret, may already have passed.
+    pub fn guard(&self) -> Result<Stream, Error> {
+        Ok(self.stream(self.values()?, "leak", true))
+    }
+
+    /// What to look for on the way out: every stored value, as stored and as
+    /// it reads inside a JSON string. This is the detector; a looser one
+    /// (partial or transformed values) replaces this table and nothing else.
+    fn values(&self) -> Result<Vec<Entry>, Error> {
         let mut entries = Vec::new();
         for (name, value) in self.store.all()? {
             for find in [json(&value), value] {
@@ -109,14 +124,15 @@ impl Scotoma {
                 });
             }
         }
-        Ok(self.stream(entries, "redact"))
+        Ok(entries)
     }
 
-    fn stream(&self, entries: Vec<Entry>, event: &'static str) -> Stream {
+    fn stream(&self, entries: Vec<Entry>, event: &'static str, refuse: bool) -> Stream {
         Stream {
             filter: Filter::new(entries),
             audit: self.audit.clone(),
             event,
+            refuse,
         }
     }
 
@@ -128,6 +144,11 @@ impl Scotoma {
     /// [`Self::redactor`] over one whole string.
     pub fn redact(&self, text: &str) -> Result<String, Error> {
         self.redactor()?.whole(text)
+    }
+
+    /// [`Self::guard`] over one whole string: `Ok` means it may be sent.
+    pub fn check(&self, text: &str) -> Result<(), Error> {
+        self.guard()?.whole(text).map(drop)
     }
 }
 
@@ -152,14 +173,16 @@ fn json(value: &str) -> String {
     out
 }
 
-/// A streaming replacement over bytes, from [`Scotoma::substituter`] or
-/// [`Scotoma::redactor`]. A match may straddle chunks: bytes that could still
+/// A streaming replacement over bytes, from [`Scotoma::substituter`],
+/// [`Scotoma::redactor`] or [`Scotoma::guard`]. A match may straddle chunks: bytes that could still
 /// begin one are held back until [`Stream::finish`].
 #[derive(Debug, Clone)]
 pub struct Stream {
     filter: Filter,
     audit: Audit,
     event: &'static str,
+    /// A guard: a match is an error, not a replacement.
+    refuse: bool,
 }
 
 impl Stream {
@@ -173,15 +196,19 @@ impl Stream {
         self.feed(&[], true)
     }
 
-    /// Every replacement is logged BEFORE its bytes are released: if the log
-    /// cannot be written, nothing comes out.
+    /// Every match is logged BEFORE its bytes are released: if the log
+    /// cannot be written, nothing comes out. A guard releases nothing at all
+    /// from a chunk that matched.
     fn feed(&mut self, chunk: &[u8], last: bool) -> Result<Vec<u8>, Error> {
         let (bytes, fired) = self.filter.feed(chunk, last);
-        for entry in fired {
+        for entry in &fired {
             self.audit
                 .record(self.event, &entry.secret, &entry.handle)?;
         }
-        Ok(bytes)
+        match fired.into_iter().next() {
+            Some(entry) if self.refuse => Err(Error::Leak(entry.secret)),
+            _ => Ok(bytes),
+        }
     }
 
     fn whole(mut self, text: &str) -> Result<String, Error> {
