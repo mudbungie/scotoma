@@ -158,6 +158,7 @@ impl Vault {
             event,
             grant,
             refuse,
+            paid: false,
         }
     }
 }
@@ -201,6 +202,8 @@ pub(crate) struct Flow {
     grant: Grant,
     /// A guard: a match is an error, not a replacement.
     refuse: bool,
+    /// The grant has been charged its one use for this flow.
+    paid: bool,
 }
 
 impl Flow {
@@ -209,6 +212,14 @@ impl Flow {
     /// BEFORE its bytes are released: if either fails, nothing comes out.
     pub fn feed(&mut self, chunk: &[u8], last: bool) -> Result<(Vec<u8>, Vec<Entry>), Error> {
         let (bytes, fired) = self.filter.feed(chunk, last);
+        // One flow (one command, one stream) is one use, however many
+        // handles it holds; a flow that matches nothing costs nothing.
+        if !(self.paid || fired.is_empty()) {
+            self.paid = self.grant.charge();
+            if !self.paid {
+                return Err(Error::Denied("the grant is used up".to_owned()));
+            }
+        }
         for entry in &fired {
             allow(&self.grant, &entry.secret)?;
             let (event, grant) = (self.event, self.grant.id.as_str());

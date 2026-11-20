@@ -122,7 +122,11 @@ fn a_grant_is_asked_for_and_lets_a_secret_be_used_but_not_seen() {
             .text()
             .contains("grant requested by unknown: pw for 1h")
     );
-    assert!(failed(&home.run(&["grant", "1h"], b"")));
+    // Holding a grant, the caller is answered by it: a narrower grant is
+    // minted and nobody is asked.
+    assert_eq!(home.run(&["grant", "1x,run"], b"").out.len(), 37);
+    assert_eq!(home.terminal.text().matches("approve?").count(), 1);
+    assert!(failed(&home.run(&["grant", "soon"], b"")));
 
     let handle = home.run(&["issue", "pw"], b"").out.trim_end().to_owned();
     let command = format!("curl -u admin:{handle}");

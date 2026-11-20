@@ -61,10 +61,26 @@ unlocked in. That is an authorization step with no second password, and no
 client call can answer it. The console is one seat today; a remote approver
 (a GUI, a parent agent) is another reader of the same question later.
 
-**One grant record; the models are ways of minting it.** A grant is
-`{id, names, expires}` held in memory. Duration grants are built. A counted
-grant adds a use count; a subagent grant is minted from a parent grant, never
-wider or longer, and dies with it. Neither needs a second mechanism.
+**One grant record; the models are its limits.** A grant is
+`{id, names, expires, uses left, run only, parent}` held in memory, asked for
+as comma-joined limits (`1h`, `3x`, `run`). An absent limit is the largest
+number, so there is no "unlimited" case.
+
+**A use is a flow that substituted a value.** One command or one stream,
+however many handles it held; a flow that matched nothing costs nothing, and
+issuing a handle costs nothing because it reveals nothing. The grant is
+charged before the first value is released.
+
+**A grant minted from a grant is the intersection.** Every question (covers
+this name? still live? may be handed a value? one use left?) is asked of the
+grant and then of its parent. So a child is never checked for being "no
+wider" when minted: it simply cannot do what its parent cannot, and it dies
+when its parent expires or is spent. A child's use is charged to every
+ancestor.
+
+**The token presented is who authorizes.** A grant request with no token is
+answered by the console; with a token, by that grant, and nobody is asked.
+One request, no second verb. To ask the user for more, ask without a token.
 
 **A grant has a public id and a private token.** The log and the console
 show the id; only the holder knows the token.
@@ -131,8 +147,11 @@ public API, which is the test that the API is sufficient.
   one. Closing that needs the resident process under another user, or
   hardening that needs `unsafe`.
 - **The wider door.** A holder of a grant can call `substitute` and read the
-  value. A grant authorizes use, and use by a caller that wants to look is
-  seeing. Restricting a grant to `run` only is a natural next limit.
+  value, unless the grant is `run` only. Even then the command it runs holds
+  the value and can write it to a file or print it encoded: `run` only stops
+  asking, not trying.
+- **Revoking one grant.** A grant ends at its limits or at `lock`; there is
+  no way to end one early.
 - **Process arguments.** A substituted argument is visible in the process
   table while the command runs.
 - **Memory.** Keys and values are ordinary buffers; they are not zeroed.

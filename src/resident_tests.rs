@@ -221,3 +221,57 @@ fn a_caller_that_walks_away_mid_stream_harms_nothing() {
     assert_eq!(client.redact("hunter2").unwrap(), "[scotoma:pw]");
     unlocked.end().unwrap();
 }
+
+#[test]
+fn a_run_only_grant_runs_but_is_never_handed_the_value() {
+    let unlocked = Unlocked::new("y\n");
+    let client = unlocked.client();
+    client.set("pw", "hunter2").unwrap();
+    let token = client.grant("1h,run", &["pw"]).unwrap();
+    let runner = client.with_grant(&token);
+    assert!(unlocked.console.text().contains("pw for 1h, run only"));
+    let handle = runner.issue("pw").unwrap();
+    assert!(
+        matches!(runner.substitute(&handle), Err(Error::Denied(why)) if why.contains("only runs"))
+    );
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let script = "test \"$1\" = hunter2 && echo \"$1\"";
+    let ran = runner.run(&["sh", "-c", script, "sh", &handle], &mut out, &mut err);
+    assert_eq!(ran.unwrap(), 0);
+    assert_eq!(String::from_utf8(out).unwrap(), format!("{handle}\n"));
+}
+
+#[test]
+fn a_grant_minted_from_a_grant_asks_nobody_and_is_bound_by_both() {
+    let unlocked = Unlocked::new("y\n");
+    let client = unlocked.client();
+    client.set("pw", "hunter2").unwrap();
+    client.set("other", "swordfish").unwrap();
+    let parent = unlocked.granted(&["pw"]);
+    let child = parent.clone();
+    let child = child.with_grant(&parent.grant("1x,run", &[]).unwrap());
+    assert_eq!(unlocked.console.text().matches("approve?").count(), 1);
+    // The log names the parent where a handle would be.
+    let log = fs::read_to_string(unlocked.scratch.path.join("audit.tsv")).unwrap();
+    let grants: Vec<Vec<&str>> = log
+        .lines()
+        .map(|line| line.split('\t').collect())
+        .filter(|fields: &Vec<&str>| fields[2] == "grant")
+        .collect();
+    assert_eq!((grants[0][3], grants[0][4]), ("pw", "-"));
+    assert_eq!((grants[1][3], grants[1][4]), ("*", grants[0][5]));
+
+    // Wider on paper, no wider in fact.
+    assert!(matches!(child.issue("other"), Err(Error::Denied(_))));
+    let handle = child.issue("pw").unwrap();
+    assert!(matches!(child.substitute(&handle), Err(Error::Denied(_))));
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    assert!(matches!(
+        child.run(&["echo", &handle], &mut out, &mut err),
+        Ok(0)
+    ));
+    // Its one use is spent; the parent's are not.
+    assert!(matches!(child.issue("pw"), Err(Error::Denied(why)) if why.contains("used up")));
+    assert!(matches!(child.grant("1h", &[]), Err(Error::Denied(_))));
+    assert_eq!(parent.substitute(&handle).unwrap(), "hunter2");
+}

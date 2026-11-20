@@ -13,7 +13,7 @@ fn only(names: &[&str]) -> Grant {
     Grant {
         id: "g1".into(),
         names,
-        expires: u64::MAX,
+        ..Grant::none()
     }
 }
 
@@ -254,4 +254,28 @@ fn no_entropy_no_secret_and_no_handle() {
         Err(Error::Io { .. })
     ));
     assert_eq!(log(&scratch), ["set pw - -"]);
+}
+
+#[test]
+fn one_flow_is_one_use_and_a_spent_grant_releases_nothing() {
+    let scratch = Scratch::new();
+    let vault = vault(&scratch);
+    vault.set("pw", "hunter2").unwrap();
+    let once = Grant::mint(
+        "g1".into(),
+        Vec::new(),
+        &crate::grant::limits("1x").unwrap(),
+        None,
+    );
+    let handle = vault.issue("pw", &once).unwrap();
+    let both = format!("{handle} {handle}");
+    let (first, second) = (
+        vault.substituter(once.clone()).unwrap(),
+        vault.substituter(once.clone()).unwrap(),
+    );
+    // No handle costs nothing; two handles in one flow cost one use.
+    let idle = vault.substituter(once).unwrap();
+    assert_eq!(pass(idle, "nothing").unwrap(), "nothing");
+    assert_eq!(pass(first, &both).unwrap(), "hunter2 hunter2");
+    assert!(matches!(pass(second, &handle), Err(Error::Denied(why)) if why.contains("used up")));
 }

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Grant limits.** `scotoma grant` / `Scotoma::grant` take comma-joined
+  limits in place of a duration: a duration (`1h`), a count of uses (`3x`)
+  and `run` (the holder may run commands but `sub` is refused). `1h` means
+  what it did.
+- **Grants minted from a grant.** A grant request that presents a grant is
+  answered by it, without asking at the console: the new grant is bound by
+  its parent's limits as well as its own. The usage log names the parent in
+  the handle column of the `grant` line.
+
 ## [0.0.2]
 
 - **The vault is encrypted and locked.** Secrets are sealed with

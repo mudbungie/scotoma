@@ -13,10 +13,17 @@ usage: scotoma COMMAND
                     is created. Grant requests are approved here.
   lock              end the unlocked session; the key and all grants are gone
 
-  grant DURATION [NAME...]
+  grant LIMITS [NAME...]
                     ask the person at the unlock terminal to let the caller
-                    use the named secrets (none: all) for 30s, 15m, 1h, 2d...;
-                    prints a token to put in SCOTOMA_GRANT
+                    use the named secrets (none: all); prints a token to put
+                    in SCOTOMA_GRANT. LIMITS joins with commas any of:
+                      30s, 15m, 1h, 2d   how long it lasts
+                      3x                 how many commands or streams may
+                                         use a secret
+                      run                `run` only: `sub` is refused
+                    as in `1h`, `1x,run` or `15m,3x`. With SCOTOMA_GRANT set
+                    nobody is asked: the new grant is minted from that one
+                    and can do nothing that one cannot. Hand it to a subagent.
 
   set NAME          store the secret read from stdin (one trailing newline dropped)
   rm NAME           delete a secret
@@ -82,10 +89,10 @@ fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>
             scotoma::unlock(&home, console)?;
         }
         ["lock"] => vault.lock()?,
-        ["grant", duration, names @ ..] => {
+        ["grant", limits, names @ ..] => {
             write(
                 streams.out,
-                format!("{}\n", vault.grant(duration, names)?).as_bytes(),
+                format!("{}\n", vault.grant(limits, names)?).as_bytes(),
             )?;
         }
         ["set", name] => {

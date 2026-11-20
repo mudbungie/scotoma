@@ -72,11 +72,19 @@ impl Scotoma {
         Ok(names.lines().map(str::to_owned).collect())
     }
 
-    /// Ask the user for a grant over `names` (none means every secret) for
-    /// `duration` (`30s`, `15m`, `1h`, `2d`). Blocks until the person at the
-    /// resident process's console answers. Returns the grant's token.
-    pub fn grant(&self, duration: &str, names: &[&str]) -> Result<String, Error> {
-        self.ask("grant", &[&[duration], names].concat())
+    /// Ask for a grant over `names` (none means every secret) and return its
+    /// token. `limits` joins with commas any of: a duration (`30s`, `15m`,
+    /// `1h`, `2d`), a count of uses (`3x`: that many commands or streams may
+    /// use a secret), and `run` (the holder may [`Self::run`] but not
+    /// [`Self::substitute`]); for example `1h`, `1x,run`.
+    ///
+    /// Without a grant of its own, this blocks until the person at the
+    /// resident process's console answers. With one ([`Self::with_grant`]),
+    /// nobody is asked: the new grant is minted from the one presented, is
+    /// bound by that one's limits as well as its own, and dies with it. That
+    /// is the grant to hand a subagent.
+    pub fn grant(&self, limits: &str, names: &[&str]) -> Result<String, Error> {
+        self.ask("grant", &[&[limits], names].concat())
     }
 
     /// Mint a handle for a secret: a random UUID that is safe to show a

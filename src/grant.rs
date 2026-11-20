@@ -1,18 +1,37 @@
-//! Authorization: a grant is who may use which secrets, and until when.
+//! Authorization: a grant is who may use which secrets, and within what
+//! limits.
 //!
 //! Grants live only in the resident process's memory and die with it. A
 //! grant has a public `id` (logged, shown) and is held by whoever knows its
-//! token (never logged).
+//! token (never logged). A grant minted from another is bound by its own
+//! limits and its parent's: every question below is asked of the whole chain,
+//! so a child can never do what its parent cannot.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Grant {
     pub id: String,
     /// The secrets it covers; empty means all of them.
     pub names: Vec<String>,
     /// Unix seconds after which it is dead.
     pub expires: u64,
+    /// Uses left, counted down by every copy of this grant.
+    pub left: Arc<AtomicU64>,
+    /// Its holder may run commands but not be handed a value.
+    pub run_only: bool,
+    /// The grant this one was minted from.
+    pub parent: Option<Arc<Grant>>,
+}
+
+/// What a grant request asks for. An absent limit is the largest number.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Limits {
+    pub seconds: u64,
+    pub uses: u64,
+    pub run_only: bool,
 }
 
 impl Grant {
@@ -23,16 +42,81 @@ impl Grant {
             id: "-".to_owned(),
             names: Vec::new(),
             expires: u64::MAX,
+            left: Arc::new(AtomicU64::new(u64::MAX)),
+            run_only: false,
+            parent: None,
         }
     }
 
+    pub fn mint(id: String, names: Vec<String>, limits: &Limits, parent: Option<Self>) -> Self {
+        Self {
+            id,
+            names,
+            expires: now().saturating_add(limits.seconds),
+            left: Arc::new(AtomicU64::new(limits.uses)),
+            run_only: limits.run_only,
+            parent: parent.map(Arc::new),
+        }
+    }
+
+    fn up(&self, ask: fn(&Self) -> bool) -> bool {
+        self.parent.as_deref().is_none_or(ask)
+    }
+
     pub fn covers(&self, name: &str) -> bool {
-        self.names.is_empty() || self.names.iter().any(|covered| covered == name)
+        let own = self.names.is_empty() || self.names.iter().any(|covered| covered == name);
+        own && self
+            .parent
+            .as_deref()
+            .is_none_or(|parent| parent.covers(name))
     }
 
     pub fn live(&self) -> bool {
-        now() < self.expires
+        now() < self.expires && self.left.load(Ordering::SeqCst) > 0 && self.up(Self::live)
     }
+
+    /// Whether its holder may be handed a value (`sub`), not only run with one.
+    pub fn reveals(&self) -> bool {
+        !self.run_only && self.up(Self::reveals)
+    }
+
+    /// Spend one use, here and up the chain. False when none is left.
+    pub fn charge(&self) -> bool {
+        let spend = |left: u64| left.checked_sub(1);
+        let paid = self
+            .left
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, spend);
+        paid.is_ok() && self.up(Self::charge)
+    }
+}
+
+/// `1h`, `3x`, `run`, or several joined by commas: a duration, a count of
+/// uses, and whether the holder may only run commands.
+pub(crate) fn limits(text: &str) -> Option<Limits> {
+    let mut limits = Limits {
+        seconds: u64::MAX,
+        uses: u64::MAX,
+        run_only: false,
+    };
+    for term in text.split(',') {
+        match term.strip_suffix('x') {
+            _ if term == "run" => limits.run_only = true,
+            Some(count) => limits.uses = count.parse().ok()?,
+            None => limits.seconds = seconds(term)?,
+        }
+    }
+    Some(limits)
+}
+
+/// The limits as the person approving reads them.
+pub(crate) fn describe(text: &str) -> String {
+    let terms = text.split(',').map(|term| match term.strip_suffix('x') {
+        _ if term == "run" => "run only".to_owned(),
+        Some("1") => "1 use".to_owned(),
+        Some(count) => format!("{count} uses"),
+        None => term.to_owned(),
+    });
+    terms.collect::<Vec<_>>().join(", ")
 }
 
 pub(crate) fn now() -> u64 {

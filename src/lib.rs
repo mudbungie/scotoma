@@ -32,6 +32,7 @@
 //! Detection is exact string matching. See the README for what that does
 //! and does not protect against.
 
+mod admit;
 mod audit;
 mod client;
 mod crypt;

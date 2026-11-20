@@ -60,10 +60,17 @@ usage: scotoma COMMAND
                     is created. Grant requests are approved here.
   lock              end the unlocked session; the key and all grants are gone
 
-  grant DURATION [NAME...]
+  grant LIMITS [NAME...]
                     ask the person at the unlock terminal to let the caller
-                    use the named secrets (none: all) for 30s, 15m, 1h, 2d...;
-                    prints a token to put in SCOTOMA_GRANT
+                    use the named secrets (none: all); prints a token to put
+                    in SCOTOMA_GRANT. LIMITS joins with commas any of:
+                      30s, 15m, 1h, 2d   how long it lasts
+                      3x                 how many commands or streams may
+                                         use a secret
+                      run                `run` only: `sub` is refused
+                    as in `1h`, `1x,run` or `15m,3x`. With SCOTOMA_GRANT set
+                    nobody is asked: the new grant is minted from that one
+                    and can do nothing that one cannot. Hand it to a subagent.
 
   set NAME          store the secret read from stdin (one trailing newline dropped)
   rm NAME           delete a secret
@@ -127,11 +134,15 @@ is the resident process itself, for a harness that wants to host it.
   the library, is a client. `scotoma lock`, or the process ending, forgets
   the key and every grant.
 - **Grants.** Issuing a handle, substituting and running need a grant: a
-  token for named secrets (or all) until a time. A grant is minted only when
-  the person at the unlock terminal answers `y`. Redaction and the guard need
-  none, so detection never lapses.
+  token for named secrets (or all), within limits: a duration, a number of
+  uses, `run` only. One use is one command or stream that substituted a
+  value, however many handles it held. A grant is minted when the person at
+  the unlock terminal answers `y`, or from a grant the caller already holds;
+  that one is bound by its parent's limits as well as its own, and nobody is
+  asked. Redaction and the guard need no grant, so detection never lapses.
 - **The usage log** is `audit.tsv`, append-only, one line per act:
-  `unix-seconds  actor  event  secret-name  handle  grant-id`. Events are
+  `unix-seconds  actor  event  secret-name  handle  grant-id` (on a `grant`
+  line, the handle column is the parent grant's id, if it has one). Events are
   `set`, `remove`, `grant`, `issue`, `use` (a handle was replaced by a value),
   `redact` (a value was rewritten) and `leak` (a guard refused content). It
   holds names and identifiers, never a value or a grant token.
@@ -149,6 +160,10 @@ is the resident process itself, for a harness that wants to host it.
 - **Exact matches only.** A value that comes back transformed is not caught:
   base64 (`curl -v` prints a Basic-auth header that way), hex, URL-encoding,
   or one character per line.
+- **A `run`-only grant is not a wall.** It refuses to hand over the value,
+  but the command it runs holds the value and can write it to a file or
+  print it encoded. It stops an agent from reading a secret by asking, not
+  one that is trying.
 - **It is not a sandbox.** To a process running as you, the vault files are
   ciphertext, and the socket gives out no value without a grant. But it can
   store, replace, remove and list secrets, attach a debugger to the resident
