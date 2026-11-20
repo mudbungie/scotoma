@@ -1,4 +1,4 @@
-.PHONY: setup build test fmt fmt-check lint deny cov size leak-scan package check install-hooks clean
+.PHONY: setup build test fmt fmt-check lint deny cov cov-text size leak-scan package check install-hooks clean
 
 # Dev tooling the gate needs beyond the pinned toolchain.
 setup:
@@ -32,6 +32,14 @@ advisories:
 # 100% lines AND regions; nothing is excluded.
 cov:
 	cargo llvm-cov --fail-under-lines 100 --fail-under-regions 100
+
+# Where the gap is: the annotated source, uncovered regions marked `^0`.
+# `bl-remote-run cov-text` brings it home to .remote/cov-text/.
+DIST ?= target/dist
+cov-text:
+	mkdir -p $(DIST)
+	cargo llvm-cov --text --output-path $(DIST)/coverage.txt
+	cargo llvm-cov report --json --output-path $(DIST)/coverage.json
 
 # The 300-line cap on every source file. Reads the index: `git add -A` first.
 size:

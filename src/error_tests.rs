@@ -18,6 +18,10 @@ fn every_variant_says_what_went_wrong() {
         "no secret named \"k\""
     );
     assert_eq!(Error::Empty.to_string(), "a secret value may not be empty");
+    assert_eq!(Error::Denied("why".into()).to_string(), "denied: why");
+    assert!(Error::Sealed.to_string().contains("failed to decrypt"));
+    assert!(Error::Locked.to_string().contains("scotoma unlock"));
+    assert_eq!(Error::Password.to_string(), "wrong password");
     let leak = Error::Leak("k".into()).to_string();
     assert_eq!(leak, "secret \"k\" found in outgoing content");
 }

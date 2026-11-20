@@ -6,7 +6,7 @@ description = "A blind spot for agents: store secrets, hand out opaque handles, 
 repository = "https://github.com/mudbungie/scotoma"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-keywords = ["secrets", "agents", "redaction", "credentials", "cli"]
+keywords = ["secrets", "agents", "redaction", "credentials", "vault"]
 categories = ["command-line-utilities", "authentication", "development-tools"]
 # MSRV = the pinned toolchain (rust-toolchain.toml).
 rust-version = "1.95"
@@ -14,9 +14,11 @@ rust-version = "1.95"
 # Patterns are gitignore-style, so a bare filename needs its leading `/`.
 include = ["/src/**", "/README.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE"]
 
-# No dependencies, and that is a state to keep: a secrets tool's supply chain
-# is the standard library.
+# Cryptography we must not write ourselves, and nothing else. Default features
+# are off: no OS randomness crate, no password-hash string format.
 [dependencies]
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 
 [lints.rust]
 unsafe_code = "forbid"

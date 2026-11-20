@@ -15,6 +15,16 @@ pub enum Error {
     Empty,
     /// The named secret's value was found in content passed to a guard.
     Leak(String),
+    /// Authorization was missing, expired, too narrow, or refused; the text
+    /// says which.
+    Denied(String),
+    /// Stored ciphertext did not authenticate: it was altered, or belongs to
+    /// another vault.
+    Sealed,
+    /// No resident process is serving this vault: it has not been unlocked.
+    Locked,
+    /// The password was wrong, empty, or mistyped when choosing it.
+    Password,
     /// The filesystem (or a stream) said no; `context` names what was touched.
     Io { context: String, source: io::Error },
 }
@@ -34,6 +44,13 @@ impl fmt::Display for Error {
             Self::Unknown(name) => write!(f, "no secret named {name:?}"),
             Self::Empty => write!(f, "a secret value may not be empty"),
             Self::Leak(name) => write!(f, "secret {name:?} found in outgoing content"),
+            Self::Denied(why) => write!(f, "denied: {why}"),
+            Self::Sealed => write!(
+                f,
+                "stored data failed to decrypt: altered, or not this vault's"
+            ),
+            Self::Locked => write!(f, "the vault is locked: run `scotoma unlock`"),
+            Self::Password => write!(f, "wrong password"),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }

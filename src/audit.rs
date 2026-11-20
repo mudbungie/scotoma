@@ -1,21 +1,22 @@
-//! The usage log, and the only other state there is.
+//! The usage log, and the only record of which handles exist.
 //!
 //! One append-only file of tab-separated lines:
 //!
 //! ```text
-//! <unix seconds> \t <actor> \t <event> \t <secret name> \t <handle or ->
+//! <unix seconds> \t <actor> \t <event> \t <secret or *> \t <handle or -> \t <grant id or ->
 //! ```
 //!
 //! Every field is drawn from the name alphabet, so a line needs no escaping
-//! and parses without heuristics. Handles are not stored anywhere else: a
+//! and parses without heuristics. It holds names and identifiers, never a
+//! value, and is not encrypted. Handles are not stored anywhere else: a
 //! handle is valid because its `issue` line is in this file.
 
 use crate::Error;
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use crate::grant;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 pub(crate) const ISSUE: &str = "issue";
 
@@ -25,12 +26,25 @@ pub(crate) struct Audit {
     pub actor: String,
 }
 
+/// One line's last four fields.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Act<'a> {
+    pub event: &'a str,
+    pub secret: &'a str,
+    pub handle: &'a str,
+    pub grant: &'a str,
+}
+
 impl Audit {
-    pub fn record(&self, event: &str, secret: &str, handle: &str) -> Result<(), Error> {
-        let at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        let line = format!("{at}\t{}\t{event}\t{secret}\t{handle}\n", self.actor);
+    pub fn record(&self, act: Act) -> Result<(), Error> {
+        let Act {
+            event,
+            secret,
+            handle,
+            grant,
+        } = act;
+        let (at, actor) = (grant::now(), &self.actor);
+        let line = format!("{at}\t{actor}\t{event}\t{secret}\t{handle}\t{grant}\n");
         let mut file = OpenOptions::new();
         file.append(true).create(true).mode(0o600);
         file.open(&self.path)
@@ -48,7 +62,7 @@ impl Audit {
         let mut issued = Vec::new();
         for line in log.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
-            if let [_, _, ISSUE, secret, handle] = fields.as_slice() {
+            if let [_, _, ISSUE, secret, handle, _] = fields.as_slice() {
                 issued.push(((*handle).to_owned(), (*secret).to_owned()));
             }
         }
@@ -56,23 +70,19 @@ impl Audit {
     }
 }
 
-/// A fresh handle: a random (version 4) UUID drawn from `entropy`.
-pub(crate) fn mint(entropy: &Path) -> Result<String, Error> {
-    let mut bytes = [0; 16];
-    File::open(entropy)
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(Error::io(entropy))?;
+/// Sixteen random bytes as a random (version 4) UUID.
+pub(crate) fn uuid(bytes: [u8; 16]) -> String {
     let random = u128::from_be_bytes(bytes);
     let uuid = random & !(0xf << 76) | (0x4 << 76);
     let uuid = uuid & !(0x3 << 62) | (0x2 << 62);
-    Ok(format!(
+    format!(
         "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
         uuid >> 96,
         (uuid >> 80) & 0xffff,
         (uuid >> 64) & 0xffff,
         (uuid >> 48) & 0xffff,
         uuid & 0xffff_ffff_ffff
-    ))
+    )
 }
 
 #[cfg(test)]

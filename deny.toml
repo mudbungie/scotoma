@@ -1,15 +1,15 @@
 # cargo-deny supply-chain policy. Verified against cargo-deny 0.20.2.
 #
-# The crate has no dependencies, so every list below is as short as the tree
-# justifies. An entry that matches nothing makes `cargo deny check` warn on
-# every run; add one only with the dependency that needs it.
+# The dependency tree is two cryptography crates (a password hash and a
+# cipher) and what they bring. Each list is as short as that tree justifies:
+# an entry that matches nothing makes `cargo deny check` warn on every run.
 
 [advisories]
 yanked = "deny"
 
 [licenses]
 # The crate's own expression, "MIT OR Apache-2.0"; the check covers it too.
-allow = ["MIT", "Apache-2.0"]
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause"]
 
 [bans]
 multiple-versions = "warn"

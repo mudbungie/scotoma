@@ -1,82 +1,92 @@
-//! The public surface: a vault directory, and the two streams over it.
+//! The unlocked vault: the keyed core that only the resident process holds.
+//!
+//! Everything that touches a secret value is here. Nothing in this file is
+//! public; other processes reach it through the socket (`resident.rs`).
 
 use crate::Error;
-use crate::audit::{self, Audit};
+use crate::audit::{self, Act, Audit};
+use crate::crypt::{self, Secret};
+use crate::grant::Grant;
 use crate::store::{self, Store};
 use crate::table::{Entry, Filter};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-const ENTROPY: &str = "/dev/urandom";
-
-/// A vault: the secrets under one directory and the log of their use.
-///
-/// Opening touches nothing; the directory appears with the first secret.
-/// Nothing is cached, so any number of processes may share one vault.
 #[derive(Debug, Clone)]
-pub struct Scotoma {
-    store: Store,
-    audit: Audit,
+pub(crate) struct Vault {
+    pub store: Store,
+    pub audit: Audit,
+    pub entropy: PathBuf,
 }
 
-impl Scotoma {
-    /// `actor` is who the log will say did it; it obeys the name alphabet.
-    pub fn open(home: impl Into<PathBuf>, actor: &str) -> Result<Self, Error> {
-        store::check(actor)?;
-        let home = home.into();
-        Ok(Self {
+impl Vault {
+    pub fn new(home: &Path, key: Secret, entropy: &Path) -> Self {
+        Self {
             store: Store {
                 dir: home.join("secrets"),
+                key,
             },
             audit: Audit {
                 path: home.join("audit.tsv"),
-                actor: actor.to_owned(),
+                actor: "resident".to_owned(),
             },
+            entropy: entropy.to_owned(),
+        }
+    }
+
+    /// The same vault, logging as `actor`.
+    pub fn acting(&self, actor: &str) -> Result<Self, Error> {
+        store::check(actor)?;
+        let audit = Audit {
+            actor: actor.to_owned(),
+            ..self.audit.clone()
+        };
+        Ok(Self {
+            audit,
+            ..self.clone()
         })
     }
 
-    /// Store `value` under `name`, replacing any previous value.
-    pub fn set(&self, name: &str, value: &str) -> Result<(), Error> {
-        self.store.put(name, value)?;
-        self.audit.record("set", name, "-")
+    fn log(&self, event: &str, secret: &str) -> Result<(), Error> {
+        self.audit.record(Act {
+            event,
+            secret,
+            handle: "-",
+            grant: "-",
+        })
     }
 
-    /// Delete a secret. Its handles stop substituting.
+    pub fn set(&self, name: &str, value: &str) -> Result<(), Error> {
+        let nonce = crypt::random(&self.entropy)?;
+        self.store.put(name, value, nonce)?;
+        self.log("set", name)
+    }
+
     pub fn remove(&self, name: &str) -> Result<(), Error> {
         self.store.drop(name)?;
-        self.audit.record("remove", name, "-")
+        self.log("remove", name)
     }
 
-    /// The names of the stored secrets, sorted. Names are not secret.
-    pub fn names(&self) -> Result<Vec<String>, Error> {
-        Ok(self
-            .store
-            .all()?
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect())
-    }
-
-    /// Mint a handle for a secret: a random UUID that is safe to show a
-    /// model. It stands for the secret's current value for as long as the
-    /// secret exists, in every process that opens this vault.
-    pub fn issue(&self, name: &str) -> Result<String, Error> {
-        self.mint(name, Path::new(ENTROPY))
-    }
-
-    fn mint(&self, name: &str, entropy: &Path) -> Result<String, Error> {
+    /// Mint a handle for a secret the grant covers.
+    pub fn issue(&self, name: &str, grant: &Grant) -> Result<String, Error> {
         if self.store.get(name)?.is_none() {
             return Err(Error::Unknown(name.to_owned()));
         }
-        let handle = audit::mint(entropy)?;
-        self.audit.record(audit::ISSUE, name, &handle)?;
+        allow(grant, name)?;
+        let handle = audit::uuid(crypt::random(&self.entropy)?);
+        let act = Act {
+            event: audit::ISSUE,
+            secret: name,
+            handle: &handle,
+            grant: &grant.id,
+        };
+        self.audit.record(act)?;
         Ok(handle)
     }
 
-    /// A stream that replaces every issued handle with its secret's value.
-    /// **Its output carries secrets**: send it to the thing that executes,
-    /// never to a model, a log or a transcript.
-    pub fn substituter(&self) -> Result<Stream, Error> {
+    /// A flow that replaces every issued handle with its secret's value, for
+    /// the secrets `grant` covers.
+    pub fn substituter(&self, grant: Grant) -> Result<Flow, Error> {
         let secrets = self.store.all()?;
         let value = |name: &str| secrets.iter().find(|(known, _)| known == name);
         let entries = self
@@ -91,22 +101,36 @@ impl Scotoma {
                     handle,
                 })
             });
-        Ok(self.stream(entries.collect(), "use", false))
+        Ok(self.flow(entries.collect(), "use", grant, false))
     }
 
-    /// A stream that replaces every stored secret value with
-    /// `[scotoma:NAME]`. The value is matched as stored and as it appears
-    /// inside a JSON string.
-    pub fn redactor(&self) -> Result<Stream, Error> {
-        Ok(self.stream(self.values()?, "redact", false))
+    /// A flow that replaces every stored value with `[scotoma:NAME]`.
+    pub fn redactor(&self) -> Result<Flow, Error> {
+        Ok(self.flow(self.values()?, "redact", Grant::none(), false))
     }
 
-    /// A stream that passes clean content through unchanged and fails with
-    /// [`Error::Leak`] at the first stored secret value. Put it in front of
-    /// anything that sends content to a model: a hit means do not send.
-    /// Bytes ahead of the hit, which hold no secret, may already have passed.
-    pub fn guard(&self) -> Result<Stream, Error> {
-        Ok(self.stream(self.values()?, "leak", true))
+    /// A flow that fails with [`Error::Leak`] at the first stored value.
+    pub fn guard(&self) -> Result<Flow, Error> {
+        Ok(self.flow(self.values()?, "leak", Grant::none(), true))
+    }
+
+    /// Ready a command: its words with handles substituted, and the flow that
+    /// redacts its output. A value that went in through a handle comes back
+    /// out as that same handle; any other secret as `[scotoma:NAME]`.
+    pub fn arm(&self, command: &[String], grant: Grant) -> Result<(Vec<String>, Flow), Error> {
+        let mut entries = self.values()?;
+        let mut substituter = self.substituter(grant)?;
+        let (mut words, mut used) = (Vec::new(), Vec::new());
+        for word in command {
+            let (bytes, fired) = substituter.feed(word.as_bytes(), true)?;
+            words.push(String::from_utf8_lossy(&bytes).into_owned());
+            used.extend(fired);
+        }
+        for entry in &mut entries {
+            let handle = used.iter().find(|used| used.secret == entry.secret);
+            entry.put = handle.map_or(entry.put.clone(), |used| used.handle.clone().into_bytes());
+        }
+        Ok((words, self.flow(entries, "redact", Grant::none(), false)))
     }
 
     /// What to look for on the way out: every stored value, as stored and as
@@ -127,28 +151,22 @@ impl Scotoma {
         Ok(entries)
     }
 
-    fn stream(&self, entries: Vec<Entry>, event: &'static str, refuse: bool) -> Stream {
-        Stream {
+    fn flow(&self, entries: Vec<Entry>, event: &'static str, grant: Grant, refuse: bool) -> Flow {
+        Flow {
             filter: Filter::new(entries),
             audit: self.audit.clone(),
             event,
+            grant,
             refuse,
         }
     }
+}
 
-    /// [`Self::substituter`] over one whole string.
-    pub fn substitute(&self, text: &str) -> Result<String, Error> {
-        self.substituter()?.whole(text)
-    }
-
-    /// [`Self::redactor`] over one whole string.
-    pub fn redact(&self, text: &str) -> Result<String, Error> {
-        self.redactor()?.whole(text)
-    }
-
-    /// [`Self::guard`] over one whole string: `Ok` means it may be sent.
-    pub fn check(&self, text: &str) -> Result<(), Error> {
-        self.guard()?.whole(text).map(drop)
+fn allow(grant: &Grant, name: &str) -> Result<(), Error> {
+    if grant.covers(name) {
+        Ok(())
+    } else {
+        Err(Error::Denied(format!("the grant does not cover {name:?}")))
     }
 }
 
@@ -173,48 +191,38 @@ fn json(value: &str) -> String {
     out
 }
 
-/// A streaming replacement over bytes, from [`Scotoma::substituter`],
-/// [`Scotoma::redactor`] or [`Scotoma::guard`]. A match may straddle chunks: bytes that could still
-/// begin one are held back until [`Stream::finish`].
+/// One streaming pass over bytes: substitution, redaction or the guard. A
+/// match may straddle chunks; bytes that could still begin one are held.
 #[derive(Debug, Clone)]
-pub struct Stream {
+pub(crate) struct Flow {
     filter: Filter,
     audit: Audit,
     event: &'static str,
+    grant: Grant,
     /// A guard: a match is an error, not a replacement.
     refuse: bool,
 }
 
-impl Stream {
-    /// Feed a chunk; get back the bytes that are now decided.
-    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, Error> {
-        self.feed(chunk, false)
-    }
-
-    /// The input has ended: get back whatever was held.
-    pub fn finish(&mut self) -> Result<Vec<u8>, Error> {
-        self.feed(&[], true)
-    }
-
-    /// Every match is logged BEFORE its bytes are released: if the log
-    /// cannot be written, nothing comes out. A guard releases nothing at all
-    /// from a chunk that matched.
-    fn feed(&mut self, chunk: &[u8], last: bool) -> Result<Vec<u8>, Error> {
+impl Flow {
+    /// Feed a chunk (`last` ends the input); get back the bytes now decided
+    /// and the entries that fired. Every match is authorized and logged
+    /// BEFORE its bytes are released: if either fails, nothing comes out.
+    pub fn feed(&mut self, chunk: &[u8], last: bool) -> Result<(Vec<u8>, Vec<Entry>), Error> {
         let (bytes, fired) = self.filter.feed(chunk, last);
         for entry in &fired {
-            self.audit
-                .record(self.event, &entry.secret, &entry.handle)?;
+            allow(&self.grant, &entry.secret)?;
+            let (event, grant) = (self.event, self.grant.id.as_str());
+            self.audit.record(Act {
+                event,
+                secret: &entry.secret,
+                handle: &entry.handle,
+                grant,
+            })?;
         }
-        match fired.into_iter().next() {
-            Some(entry) if self.refuse => Err(Error::Leak(entry.secret)),
-            _ => Ok(bytes),
+        match fired.first() {
+            Some(entry) if self.refuse => Err(Error::Leak(entry.secret.clone())),
+            _ => Ok((bytes, fired)),
         }
-    }
-
-    fn whole(mut self, text: &str) -> Result<String, Error> {
-        let bytes = self.feed(text.as_bytes(), true)?;
-        // Whole UTF-8 strings replaced inside a UTF-8 string: still UTF-8.
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 
