@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2]
+
 - **The vault is encrypted and locked.** Secrets are sealed with
   XChaCha20-Poly1305 under a vault key that is itself sealed under an
   Argon2id stretch of a password. `scotoma unlock` (library:

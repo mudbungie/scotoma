@@ -149,10 +149,10 @@ is the resident process itself, for a harness that wants to host it.
 - **Exact matches only.** A value that comes back transformed is not caught:
   base64 (`curl -v` prints a Basic-auth header that way), hex, URL-encoding,
   or one character per line.
-- **It is not a sandbox.** A process running as you cannot read the vault
-  files or use the socket without a grant, but it can attach a debugger to
-  the resident process, or read a grant token from the environment of
-  whatever holds one. A grant is a bearer token: guard it like a password
+- **It is not a sandbox.** To a process running as you, the vault files are
+  ciphertext, and the socket gives out no value without a grant. But it can
+  store, replace, remove and list secrets, attach a debugger to the resident
+  process, or read a grant token from the environment of whatever holds one. A grant is a bearer token: guard it like a password
   that expires.
 - **Arguments are visible** to other local processes (`ps`) for the life of
   the command, as with any command-line credential.

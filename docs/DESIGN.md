@@ -124,8 +124,9 @@ public API, which is the test that the API is sufficient.
 - **Transformed values.** Detection is exact. Base64, hex, URL-encoding,
   reversal, or printing a value one character at a time all pass. Scotoma
   stops accidents and casual exposure, not a model that is trying.
-- **A hostile process running as the user.** It cannot read the files or use
-  the socket without a grant. It can attach a debugger to the resident
+- **A hostile process running as the user.** The files are ciphertext to it, and
+  the socket releases no value without a grant. It can store, replace, remove
+  and list secrets (those need no grant), attach a debugger to the resident
   process, or lift a grant token from the environment of a process that holds
   one. Closing that needs the resident process under another user, or
   hardening that needs `unsafe`.

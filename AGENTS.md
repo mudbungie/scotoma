@@ -29,4 +29,4 @@ Every gate step sweeps `git ls-files`: `git add -A` before running one locally, 
 
 ## Releases
 
-Landing on `main` refreshes one release PR (release-plz); merging it tags `v<version>` and publishes to crates.io. Bumps are PATCH unless a commit message carries a standalone `[minor]` or `[major]`.
+Landing on `main` refreshes one release PR (release-plz); merging it tags `v<version>` and publishes to crates.io. Bumps are PATCH unless a commit message carries a standalone `[minor]` or `[major]`. `CHANGELOG.md` is written by hand: each change adds a bullet under `## [Unreleased]`, and that heading is renamed to the version on the release PR before it is merged.

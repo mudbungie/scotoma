@@ -15,7 +15,7 @@ name: Release-plz
 #     OIDC token minted under that trigger, and a called workflow keeps the gate
 #     and the release in one run joined by `needs:`.
 #   * release-plz PR (push to main only) — opens or refreshes the release PR
-#     (version bump in Cargo.toml/Cargo.lock, CHANGELOG.md entry), then
+#     (version bump in Cargo.toml/Cargo.lock), then
 #     DISPATCHES ci.yml on the release branch. The dispatch is the fix for the
 #     PR whose checks never ran: release-plz opens the PR with `GITHUB_TOKEN`,
 #     and GitHub starts no `pull_request` run for an event that token caused —

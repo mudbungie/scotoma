@@ -25,10 +25,9 @@ publish = true
 # release-plz turns a detected API break into a major bump on its own — which
 # would silently defeat the explicit `[minor]`/`[major]` marker policy.
 semver_check = false
+# CHANGELOG.md is written by hand, one bullet per change under
+# `## [Unreleased]`. Generated entries would only restate commit subjects
+# beside it.
+changelog_update = false
 custom_minor_increment_regex = '(^|\s)\[minor\](\s|$)'
 custom_major_increment_regex = '(^|\s)\[major\](\s|$)'
-
-[changelog]
-commit_parsers = [
-    { message = ".*", group = "Changes" },
-]
