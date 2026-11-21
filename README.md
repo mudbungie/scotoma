@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mudbungie/scotoma/actions/workflows/release-plz.yml/badge.svg)](https://github.com/mudbungie/scotoma/actions/workflows/release-plz.yml)
 
-A blind spot for agents: store secrets, hand out opaque handles, substitute
+A blind spot for agents: store secrets, let a model name them, substitute
 the value only at execution, and redact it from everything the model could
 read.
 
@@ -12,11 +12,10 @@ read.
 An agent that needs a password should be able to *use* it without ever
 *seeing* it. Secrets are encrypted on disk under your password. You unlock
 the vault into one resident process, which alone holds the key, and you
-approve who may use what, for how long. The model asks for a secret by name
-and receives a random UUID (a *handle*). It writes the handle wherever the
-secret should go; the resident process runs the command with the real value
-swapped in, and anything the command prints has the value turned back into
-the handle. Everything is logged.
+approve who may use what, for how long. The model writes
+`[scotoma:NAME]` wherever a secret should go; the resident process runs the
+command with the real value swapped in, and anything the command prints has
+the value turned back into `[scotoma:NAME]`. Everything is logged.
 
 In your terminal:
 
@@ -33,11 +32,9 @@ In the agent's:
 ```console
 $ printf 'hunter2' | scotoma set api-password
 $ export SCOTOMA_GRANT=$(scotoma grant 1h api-password)     # waits for your "y"
-$ scotoma issue api-password
-3f0c5e0a-8a55-4c1e-9d0b-6a1f8f0e2b7d
-$ scotoma run curl -u admin:3f0c5e0a-8a55-4c1e-9d0b-6a1f8f0e2b7d https://example.com/login
-$ scotoma run sh -c 'echo "the password is $1"' sh 3f0c5e0a-8a55-4c1e-9d0b-6a1f8f0e2b7d
-the password is 3f0c5e0a-8a55-4c1e-9d0b-6a1f8f0e2b7d
+$ scotoma run curl -u 'admin:[scotoma:api-password]' https://example.com/login
+$ scotoma run sh -c 'echo "the password is $1"' sh '[scotoma:api-password]'
+the password is [scotoma:api-password]
 $ echo 'about to send hunter2 to the model' | scotoma guard
 scotoma: secret "api-password" found in outgoing content
 ```
@@ -76,12 +73,11 @@ usage: scotoma COMMAND
   rm NAME           delete a secret
   ls                list secret names
 
-  issue NAME        print a new handle for a secret                    [grant]
-  run CMD [ARG...]  run CMD with each handle in its arguments replaced by
-                    its secret; in its output the secret reads as the
-                    handle again                                       [grant]
-  sub               copy stdin to stdout, each handle replaced by its
-                    secret                                             [grant]
+  run CMD [ARG...]  run CMD with each [scotoma:NAME] in its arguments
+                    replaced by that secret; in its output the secret reads
+                    as [scotoma:NAME] again                            [grant]
+  sub               copy stdin to stdout, each [scotoma:NAME] replaced by
+                    that secret                                        [grant]
   redact            copy stdin to stdout, each secret value replaced by [scotoma:NAME]
   guard             copy stdin to stdout; fail at the first secret value
 
@@ -104,8 +100,8 @@ value is never accepted or printed as an argument, only through stdin.
 let vault = scotoma::Scotoma::open(home, "my-harness")?;        // a client; holds no key
 let vault = vault.clone().with_grant(&vault.grant("1h", &["api-password"])?);
 
-let handle = vault.issue("api-password")?;                      // safe to show a model
-let code = vault.run(&["curl", "-u", &login], &mut out, &mut err)?;  // the value never comes here
+let command = ["curl", "-u", "admin:[scotoma:api-password]", url];  // as the model wrote it
+let code = vault.run(&command, &mut out, &mut err)?;            // the value never comes here
 let shown = vault.redact(&tool_output)?;                        // safe to show a model
 vault.check(&request_body)?;                                    // Err(Leak) means: do not send
 ```
@@ -133,22 +129,23 @@ is the resident process itself, for a harness that wants to host it.
   the vault on a socket in the vault directory. Every other invocation, and
   the library, is a client. `scotoma lock`, or the process ending, forgets
   the key and every grant.
-- **Grants.** Issuing a handle, substituting and running need a grant: a
+- **Grants.** Substituting and running need a grant: a
   token for named secrets (or all), within limits: a duration, a number of
   uses, `run` only. One use is one command or stream that substituted a
-  value, however many handles it held. A grant is minted when the person at
+  value, however many placeholders it held. A grant is minted when the person at
   the unlock terminal answers `y`, or from a grant the caller already holds;
   that one is bound by its parent's limits as well as its own, and nobody is
   asked. Redaction and the guard need no grant, so detection never lapses.
 - **The usage log** is `audit.tsv`, append-only, one line per act:
-  `unix-seconds  actor  event  secret-name  handle  grant-id` (on a `grant`
-  line, the handle column is the parent grant's id, if it has one). Events are
-  `set`, `remove`, `grant`, `issue`, `use` (a handle was replaced by a value),
+  `unix-seconds  actor  event  secret-name  grant-id  note` (on a `grant`
+  line, the note is the parent grant's id, if it has one). Events are
+  `set`, `remove`, `grant`, `use` (a placeholder was replaced by a value),
   `redact` (a value was rewritten) and `leak` (a guard refused content). It
   holds names and identifiers, never a value or a grant token.
-- **Handles** are stored nowhere else. A handle is valid because its `issue`
-  line is in the log, and it stands for the secret's *current* value until
-  the secret is removed.
+- **The placeholder is the name.** `[scotoma:NAME]` stands for the secret's
+  current value; whether it fills in is the grant's decision alone. The same
+  text is what redaction writes, so a model reads back what it wrote. A
+  placeholder for a secret that does not exist is left as it is.
 - **Matching is exact**, leftmost-longest. Redaction and the guard also match
   a value as it reads inside a JSON string, so a serialized request body can
   be checked.

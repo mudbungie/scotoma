@@ -108,7 +108,6 @@ fn unlock_serves_until_lock_and_refuses_a_wrong_password() {
 fn a_grant_is_asked_for_and_lets_a_secret_be_used_but_not_seen() {
     let mut home = Home::unlocked("y\nn\n");
     home.run(&["set", "pw"], b"hunter2\n");
-    assert!(failed(&home.run(&["issue", "pw"], b"")));
     assert!(failed(&home.run(&["sub"], b"x")));
 
     home.grant = home
@@ -128,14 +127,14 @@ fn a_grant_is_asked_for_and_lets_a_secret_be_used_but_not_seen() {
     assert_eq!(home.terminal.text().matches("approve?").count(), 1);
     assert!(failed(&home.run(&["grant", "soon"], b"")));
 
-    let handle = home.run(&["issue", "pw"], b"").out.trim_end().to_owned();
+    let handle = "[scotoma:pw]";
     let command = format!("curl -u admin:{handle}");
     assert_eq!(
         home.run(&["sub"], command.as_bytes()).out,
         "curl -u admin:hunter2"
     );
     let script = "test \"$1\" = hunter2 && echo \"password is $1\" && echo oops >&2 && exit 3";
-    let ran = home.run(&["run", "sh", "-c", script, "sh", &handle], b"");
+    let ran = home.run(&["run", "sh", "-c", script, "sh", handle], b"");
     assert_eq!(
         ran,
         Outcome {
@@ -183,9 +182,8 @@ fn broken_streams_are_failures() {
     home.run(&["set", "pw"], b"hunter2");
     home.grant = home.run(&["grant", "1h"], b"").out.trim_end().to_owned();
     let env = home.env();
-    let cases: [&[&str]; 6] = [
+    let cases: [&[&str]; 5] = [
         &["ls"],
-        &["issue", "pw"],
         &["grant", "1h"],
         &["sub"],
         &["redact"],

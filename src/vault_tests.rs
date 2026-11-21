@@ -17,7 +17,7 @@ fn only(names: &[&str]) -> Grant {
     }
 }
 
-/// The log as `event secret handle grant` tails.
+/// The log as `event secret grant note` tails.
 fn log(scratch: &Scratch) -> Vec<String> {
     let text = fs::read_to_string(scratch.path.join("audit.tsv")).unwrap();
     let tail = |line: &str| line.split('\t').skip(2).collect::<Vec<_>>().join(" ");
@@ -68,29 +68,23 @@ fn each_act_is_logged_under_its_actor() {
 }
 
 #[test]
-fn a_handle_substitutes_under_a_grant_and_each_use_is_logged() {
+fn a_placeholder_substitutes_under_a_grant_and_each_use_is_logged() {
     let scratch = Scratch::new();
     let vault = vault(&scratch);
     vault.set("pw", "hunter2").unwrap();
-    let handle = vault.issue("pw", &only(&["pw"])).unwrap();
-    assert_eq!(handle.len(), 36);
+    let handle = "[scotoma:pw]".to_owned();
     let command = format!("curl -u admin:{handle}");
     let flow = vault.substituter(only(&[])).unwrap();
     assert_eq!(pass(flow, &command).unwrap(), "curl -u admin:hunter2");
-    let expected = [
-        "set pw - -".to_owned(),
-        format!("issue pw {handle} g1"),
-        format!("use pw {handle} g1"),
-    ];
-    assert_eq!(log(&scratch), expected);
+    assert_eq!(log(&scratch), ["set pw - -", "use pw g1 -"]);
 }
 
 #[test]
-fn a_handle_follows_its_secret() {
+fn a_placeholder_follows_its_secret() {
     let scratch = Scratch::new();
     let vault = vault(&scratch);
     vault.set("pw", "old").unwrap();
-    let handle = vault.issue("pw", &Grant::none()).unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     vault.set("pw", "new").unwrap();
     assert_eq!(
         pass(vault.substituter(Grant::none()).unwrap(), &handle).unwrap(),
@@ -109,22 +103,10 @@ fn a_grant_reaches_only_the_secrets_it_names() {
     let vault = vault(&scratch);
     vault.set("pw", "hunter2").unwrap();
     vault.set("other", "swordfish").unwrap();
-    let handle = vault.issue("pw", &Grant::none()).unwrap();
-    assert!(matches!(
-        vault.issue("pw", &only(&["other"])),
-        Err(Error::Denied(_))
-    ));
+    let handle = "[scotoma:pw]".to_owned();
     let narrow = vault.substituter(only(&["other"])).unwrap();
     assert!(matches!(pass(narrow, &handle), Err(Error::Denied(why)) if why.contains("\"pw\"")));
-    assert!(matches!(
-        vault.issue("absent", &Grant::none()),
-        Err(Error::Unknown(_))
-    ));
-    assert!(matches!(
-        vault.issue("not a name", &Grant::none()),
-        Err(Error::Name(_))
-    ));
-    let stranger = "00000000-0000-4000-8000-000000000000";
+    let stranger = "[scotoma:absent] [scotoma:pw";
     assert_eq!(
         pass(vault.substituter(Grant::none()).unwrap(), stranger).unwrap(),
         stranger
@@ -178,12 +160,12 @@ fn a_flow_catches_a_secret_split_across_chunks() {
 }
 
 #[test]
-fn an_armed_command_gets_the_value_and_its_output_gets_the_handle_back() {
+fn an_armed_command_gets_the_value_and_its_output_gets_the_placeholder_back() {
     let scratch = Scratch::new();
     let vault = vault(&scratch);
     vault.set("pw", "hunter2").unwrap();
     vault.set("other", "swordfish").unwrap();
-    let handle = vault.issue("pw", &Grant::none()).unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     let command = ["echo".to_owned(), format!("password is {handle}")];
     let (words, output) = vault.arm(&command, Grant::none()).unwrap();
     assert_eq!(words, ["echo", "password is hunter2"]);
@@ -200,20 +182,12 @@ fn nothing_is_released_when_the_log_cannot_be_written() {
     let scratch = Scratch::new();
     let vault = vault(&scratch);
     vault.set("pw", "hunter2").unwrap();
-    let handle = vault.issue("pw", &Grant::none()).unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     let substituter = vault.substituter(Grant::none()).unwrap();
     break_log(&scratch);
     assert!(matches!(pass(substituter, &handle), Err(Error::Io { .. })));
     assert!(matches!(
-        vault.substituter(Grant::none()),
-        Err(Error::Io { .. })
-    ));
-    assert!(matches!(
         vault.arm(&[handle], Grant::none()),
-        Err(Error::Io { .. })
-    ));
-    assert!(matches!(
-        vault.issue("pw", &Grant::none()),
         Err(Error::Io { .. })
     ));
     assert!(matches!(vault.set("pw", "v"), Err(Error::Io { .. })));
@@ -240,7 +214,7 @@ fn a_broken_store_is_an_error_everywhere() {
 }
 
 #[test]
-fn no_entropy_no_secret_and_no_handle() {
+fn no_entropy_no_secret() {
     let scratch = Scratch::new();
     let vault = vault(&scratch);
     vault.set("pw", "hunter2").unwrap();
@@ -249,10 +223,6 @@ fn no_entropy_no_secret_and_no_handle() {
         ..vault
     };
     assert!(matches!(starved.set("new", "v"), Err(Error::Io { .. })));
-    assert!(matches!(
-        starved.issue("pw", &Grant::none()),
-        Err(Error::Io { .. })
-    ));
     assert_eq!(log(&scratch), ["set pw - -"]);
 }
 
@@ -267,13 +237,13 @@ fn one_flow_is_one_use_and_a_spent_grant_releases_nothing() {
         &crate::grant::limits("1x").unwrap(),
         None,
     );
-    let handle = vault.issue("pw", &once).unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     let both = format!("{handle} {handle}");
     let (first, second) = (
         vault.substituter(once.clone()).unwrap(),
         vault.substituter(once.clone()).unwrap(),
     );
-    // No handle costs nothing; two handles in one flow cost one use.
+    // No placeholder costs nothing; two in one flow cost one use.
     let idle = vault.substituter(once).unwrap();
     assert_eq!(pass(idle, "nothing").unwrap(), "nothing");
     assert_eq!(pass(first, &both).unwrap(), "hunter2 hunter2");

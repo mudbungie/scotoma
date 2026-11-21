@@ -55,12 +55,12 @@ fn a_secret_reaches_the_command_and_never_the_reader() {
         run("", &["set", "pw"], "hunter2\n"),
         (Some(0), String::new())
     );
-    assert_eq!(run("", &["issue", "pw"], "").0, Some(1));
+    let handle = "[scotoma:pw]";
+    assert_eq!(run("", &["run", "echo", handle], "").0, Some(1));
     let grant = run("", &["grant", "15m", "pw"], "").1;
-    let handle = run(&grant, &["issue", "pw"], "").1;
 
     let script = "test \"$1\" = hunter2 && echo \"the password is $1\"";
-    let ran = run(&grant, &["run", "sh", "-c", script, "sh", &handle], "");
+    let ran = run(&grant, &["run", "sh", "-c", script, "sh", handle], "");
     assert_eq!(ran, (Some(0), format!("the password is {handle}")));
     assert_eq!(run("", &["guard"], "about to send hunter2").0, Some(1));
 
@@ -69,7 +69,7 @@ fn a_secret_reaches_the_command_and_never_the_reader() {
         .lines()
         .map(|line| line.split('\t').nth(2).unwrap())
         .collect();
-    assert_eq!(events, ["set", "grant", "issue", "use", "redact", "leak"]);
+    assert_eq!(events, ["set", "grant", "use", "redact", "leak"]);
     assert!(
         log.lines()
             .all(|line| line.split('\t').nth(1) == Some("end-to-end"))

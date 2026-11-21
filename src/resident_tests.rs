@@ -150,10 +150,11 @@ fn a_grant_expires_and_a_missing_one_is_refused() {
     let unlocked = Unlocked::new("y\ny\n");
     let client = unlocked.client();
     client.set("pw", "hunter2").unwrap();
-    assert!(matches!(client.issue("pw"), Err(Error::Denied(why)) if why.starts_with("no grant")));
+    assert!(
+        matches!(client.substitute("x"), Err(Error::Denied(why)) if why.starts_with("no grant"))
+    );
     let spent = client.clone().with_grant(&client.grant("0s", &[]).unwrap());
-    assert!(matches!(spent.issue("pw"), Err(Error::Denied(why)) if why.contains("expired")));
-    assert!(matches!(spent.substitute("x"), Err(Error::Denied(_))));
+    assert!(matches!(spent.substitute("x"), Err(Error::Denied(why)) if why.contains("expired")));
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert!(matches!(
         spent.run(&["true"], &mut out, &mut err),
@@ -161,7 +162,7 @@ fn a_grant_expires_and_a_missing_one_is_refused() {
     ));
     let all = unlocked.granted(&[]);
     assert_eq!(unlocked.log().last().unwrap(), "grant *");
-    assert_eq!(all.issue("pw").unwrap().len(), 36);
+    assert_eq!(all.substitute("[scotoma:pw]").unwrap(), "hunter2");
 }
 
 #[test]
@@ -230,7 +231,7 @@ fn a_run_only_grant_runs_but_is_never_handed_the_value() {
     let token = client.grant("1h,run", &["pw"]).unwrap();
     let runner = client.with_grant(&token);
     assert!(unlocked.console.text().contains("pw for 1h, run only"));
-    let handle = runner.issue("pw").unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     assert!(
         matches!(runner.substitute(&handle), Err(Error::Denied(why)) if why.contains("only runs"))
     );
@@ -251,19 +252,26 @@ fn a_grant_minted_from_a_grant_asks_nobody_and_is_bound_by_both() {
     let child = parent.clone();
     let child = child.with_grant(&parent.grant("1x,run", &[]).unwrap());
     assert_eq!(unlocked.console.text().matches("approve?").count(), 1);
-    // The log names the parent where a handle would be.
+    // The log names the parent in its note.
     let log = fs::read_to_string(unlocked.scratch.path.join("audit.tsv")).unwrap();
     let grants: Vec<Vec<&str>> = log
         .lines()
         .map(|line| line.split('\t').collect())
         .filter(|fields: &Vec<&str>| fields[2] == "grant")
         .collect();
-    assert_eq!((grants[0][3], grants[0][4]), ("pw", "-"));
-    assert_eq!((grants[1][3], grants[1][4]), ("*", grants[0][5]));
+    assert_eq!((grants[0][3], grants[0][5]), ("pw", "-"));
+    assert_eq!((grants[1][3], grants[1][5]), ("*", grants[0][4]));
 
     // Wider on paper, no wider in fact.
-    assert!(matches!(child.issue("other"), Err(Error::Denied(_))));
-    let handle = child.issue("pw").unwrap();
+    assert!(matches!(
+        child.run(
+            &["echo", "[scotoma:other]"],
+            &mut Vec::new(),
+            &mut Vec::new()
+        ),
+        Err(Error::Denied(_))
+    ));
+    let handle = "[scotoma:pw]".to_owned();
     assert!(matches!(child.substitute(&handle), Err(Error::Denied(_))));
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert!(matches!(
@@ -271,7 +279,7 @@ fn a_grant_minted_from_a_grant_asks_nobody_and_is_bound_by_both() {
         Ok(0)
     ));
     // Its one use is spent; the parent's are not.
-    assert!(matches!(child.issue("pw"), Err(Error::Denied(why)) if why.contains("used up")));
+    assert!(matches!(child.substitute("x"), Err(Error::Denied(why)) if why.contains("used up")));
     assert!(matches!(child.grant("1h", &[]), Err(Error::Denied(_))));
     assert_eq!(parent.substitute(&handle).unwrap(), "hunter2");
 }

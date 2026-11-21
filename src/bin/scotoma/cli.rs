@@ -29,12 +29,11 @@ usage: scotoma COMMAND
   rm NAME           delete a secret
   ls                list secret names
 
-  issue NAME        print a new handle for a secret                    [grant]
-  run CMD [ARG...]  run CMD with each handle in its arguments replaced by
-                    its secret; in its output the secret reads as the
-                    handle again                                       [grant]
-  sub               copy stdin to stdout, each handle replaced by its
-                    secret                                             [grant]
+  run CMD [ARG...]  run CMD with each [scotoma:NAME] in its arguments
+                    replaced by that secret; in its output the secret reads
+                    as [scotoma:NAME] again                            [grant]
+  sub               copy stdin to stdout, each [scotoma:NAME] replaced by
+                    that secret                                        [grant]
   redact            copy stdin to stdout, each secret value replaced by [scotoma:NAME]
   guard             copy stdin to stdout; fail at the first secret value
 
@@ -109,7 +108,6 @@ fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>
             let names = vault.names()?.iter().fold(String::new(), listed);
             write(streams.out, names.as_bytes())?;
         }
-        ["issue", name] => write(streams.out, format!("{}\n", vault.issue(name)?).as_bytes())?,
         ["sub"] => pump(streams.input, &mut vault.substituter()?, streams.out)?,
         ["redact"] => pump(streams.input, &mut vault.redactor()?, streams.out)?,
         ["guard"] => pump(streams.input, &mut vault.guard()?, streams.out)?,

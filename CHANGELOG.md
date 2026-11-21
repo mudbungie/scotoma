@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Name placeholders replace UUID handles.** A model writes
+  `[scotoma:NAME]`; `issue` (`scotoma issue`, `Scotoma::issue`) is gone. The
+  usage log's fifth and sixth columns are now the grant id and a note.
+
 - **Grant limits.** `scotoma grant` / `Scotoma::grant` take comma-joined
   limits in place of a duration: a duration (`1h`), a count of uses (`3x`)
   and `run` (the holder may run commands but `sub` is refused). `1h` means

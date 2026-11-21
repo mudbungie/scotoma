@@ -13,18 +13,17 @@ unreadable at rest, and nothing uses it without the user's say-so.
 ## The model
 
 - A **secret** is a named value. The name is public; the value is not.
-- A **handle** is a random UUID that stands for a secret. It is safe to show
-  a model, and it is the only thing the model is ever given.
+- A **placeholder**, `[scotoma:NAME]`, stands for a secret. It is what a
+  model writes to use one and what it reads where the value was.
 - A **grant** is the user's permission: these secrets, until this time. Its
   holder presents a token.
 - The **resident process** is the only thing that ever holds a value. The
   user unlocks the vault into it with a password; it dies with the session.
 - The **usage log** records every act.
 
-Four verbs, all performed by the resident process on a client's request:
+Three verbs, all performed by the resident process on a client's request:
 
-- **Issue** a handle for a secret (needs a grant).
-- **Substitute**: replace each handle with its secret's value, as late as
+- **Substitute**: replace each placeholder with its secret's value, as late as
   possible on the way to execution (needs a grant). Best done as **run**:
   the resident process executes the command itself.
 - **Redact**: replace each secret value in what a tool printed, before it is
@@ -67,8 +66,8 @@ as comma-joined limits (`1h`, `3x`, `run`). An absent limit is the largest
 number, so there is no "unlimited" case.
 
 **A use is a flow that substituted a value.** One command or one stream,
-however many handles it held; a flow that matched nothing costs nothing, and
-issuing a handle costs nothing because it reveals nothing. The grant is
+however many placeholders it held; a flow that matched nothing or was refused
+costs nothing. The grant is
 charged before the first value is released.
 
 **A grant minted from a grant is the intersection.** Every question (covers
@@ -94,13 +93,16 @@ socket. `substitute`: the caller gets the text and executes it, for a harness
 that must own the process. `run` is the default; `substitute` is the wider
 door.
 
-**Output gets the handle back.** In `run`, a value that went in through a
-handle is redacted to that same handle, so the model reads back what it
-wrote. Any other secret is redacted to `[scotoma:NAME]`.
+**The placeholder is the name, in both directions.** There is no handle to
+issue, store or look up: the model writes `[scotoma:NAME]`, the grant decides
+whether it fills in, and redaction writes the same text where the value was,
+so the model reads back what it wrote. An earlier design issued a random UUID
+per secret; it bought nothing the grant does not already decide, and cost a
+tool call and a table.
 
 **One matcher.** Substitution, redaction and the guard are the same
-streaming matcher (`src/table.rs`) over two tables: handle → value, and value
-→ marker. The guard is the redactor with a match turned into an error.
+streaming matcher (`src/table.rs`) over two tables: placeholder → value, and
+value → placeholder. The guard is the redactor with a match turned into an error.
 Matching is exact, leftmost-longest, on bytes; the table is a sorted array
 walked as a trie.
 
@@ -113,12 +115,6 @@ behind the same flow; no caller changes.
 **Streams hold back only what is undecided.** A chunk boundary can fall
 inside a match. Bytes that could still begin an entry are held until the next
 chunk or the end; everything else is released at once.
-
-**Handles are not stored; they are read out of the log.** A handle is valid
-because its `issue` line exists. There is no handle table to drift, and a
-handle survives the resident process being locked and unlocked. A handle
-follows the name, not the value: rotating a secret keeps its handles working;
-removing it kills them.
 
 **Authorize, log, then release.** Each match is checked against the grant
 and written to the log before its bytes are returned. If either fails,
@@ -156,8 +152,7 @@ public API, which is the test that the API is sufficient.
   table while the command runs.
 - **Memory.** Keys and values are ordinary buffers; they are not zeroed.
 - **A dead caller's command** is stopped only when it next writes output.
-- **Log growth.** Substitution reads the whole log to find issued handles.
-  Nothing rotates it.
+- **Log growth.** Nothing rotates the log.
 - **No password change, no recovery.**
 
 ## Integrating a harness
@@ -166,12 +161,12 @@ The contract, for any agent loop:
 
 1. **The user unlocks** the vault and, when the harness asks, approves a
    grant. The harness keeps the token (`Scotoma::with_grant`).
-2. **A `scotoma` tool** takes `{"name": "..."}` and returns
-   `Scotoma::issue(name)`. The model then writes the handle into a later tool
-   call of the same turn, for example a shell command.
+2. **Tell the model the names** (`Scotoma::names`) and the form
+   `[scotoma:NAME]`. It writes that into a tool call, for example a shell
+   command.
 3. **Execute through `Scotoma::run`** where the tool is a command: the call
-   is recorded and approved in its handle form, and the output comes back
-   with the handle in place. Where the harness must spawn the process itself,
+   is recorded and approved in its placeholder form, and the output comes
+   back with the placeholder in place. Where the harness must spawn the process itself,
    `substitute` each string of the input immediately before the spawn, never
    over serialized JSON (a value containing a quote would corrupt it), and
    `redact` what comes back before it is bounded, recorded or returned.

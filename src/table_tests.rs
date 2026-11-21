@@ -5,7 +5,6 @@ fn entry(find: &str, put: &str) -> Entry {
         find: find.into(),
         put: put.into(),
         secret: put.into(),
-        handle: "-".into(),
     }
 }
 

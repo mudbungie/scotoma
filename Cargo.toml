@@ -2,7 +2,7 @@
 name = "scotoma"
 version = "0.0.2"
 edition = "2024"
-description = "A blind spot for agents: store secrets, hand out opaque handles, substitute the value only at execution, and redact it from everything the model could read."
+description = "A blind spot for agents: store secrets, let a model name them, substitute the value only at execution, and redact it from everything the model could read."
 repository = "https://github.com/mudbungie/scotoma"
 license = "MIT OR Apache-2.0"
 readme = "README.md"

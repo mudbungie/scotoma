@@ -1,6 +1,6 @@
 //! The one mechanism: a streaming find-and-replace over a fixed table.
 //!
-//! Substitution (handle -> secret value) and redaction (secret value ->
+//! Substitution (placeholder -> secret value) and redaction (secret value ->
 //! marker) are the same machine with different tables. Matching is
 //! leftmost-longest and exact, and a match may straddle any chunk boundary:
 //! bytes that could still begin a match are held until the next chunk (or the
@@ -12,7 +12,6 @@ pub(crate) struct Entry {
     pub find: Vec<u8>,
     pub put: Vec<u8>,
     pub secret: String,
-    pub handle: String,
 }
 
 /// What the table says about the text starting at one position.

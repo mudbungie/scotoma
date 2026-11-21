@@ -20,7 +20,7 @@ pub(crate) struct Place<'a> {
     pub env: &'a [u8],
 }
 
-/// Run `command` with its handles substituted, relaying its redacted stdout
+/// Run `command` with its placeholders substituted, relaying its redacted stdout
 /// and stderr to `conn` as they flow. Returns the exit code as one byte.
 pub(crate) fn run(
     vault: &Vault,

@@ -4,7 +4,7 @@ This repo defers to `~/AGENTS.md` for general practices. Project-specific notes 
 
 ## What scotoma is
 
-A secrets manager for agents: a library and a command. A model gets an opaque handle, the harness substitutes the value at execution and redacts it everywhere else, and every act is logged. Read `docs/DESIGN.md` before changing behaviour; it is the living design and is edited like code.
+A secrets manager for agents: a library and a command. A model writes a placeholder naming a secret, the harness substitutes the value at execution and redacts it everywhere else, and every act is logged. Read `docs/DESIGN.md` before changing behaviour; it is the living design and is edited like code.
 
 ## Hard rules
 

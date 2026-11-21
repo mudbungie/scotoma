@@ -32,8 +32,8 @@ impl Scotoma {
         })
     }
 
-    /// Present a grant token (from [`Self::grant`]) with every call. Issuing
-    /// a handle, substituting and running need one.
+    /// Present a grant token (from [`Self::grant`]) with every call.
+    /// Substituting and running need one.
     #[must_use]
     pub fn with_grant(mut self, token: &str) -> Self {
         token.clone_into(&mut self.grant);
@@ -61,7 +61,7 @@ impl Scotoma {
         self.ask("set", &[name, value]).map(drop)
     }
 
-    /// Delete a secret. Its handles stop substituting.
+    /// Delete a secret. Its placeholder stops substituting.
     pub fn remove(&self, name: &str) -> Result<(), Error> {
         self.ask("rm", &[name]).map(drop)
     }
@@ -87,13 +87,6 @@ impl Scotoma {
         self.ask("grant", &[&[limits], names].concat())
     }
 
-    /// Mint a handle for a secret: a random UUID that is safe to show a
-    /// model. It stands for the secret's current value for as long as the
-    /// secret exists. Needs a grant that covers the secret.
-    pub fn issue(&self, name: &str) -> Result<String, Error> {
-        self.ask("issue", &[name])
-    }
-
     /// End the resident process. The key and every grant are gone.
     pub fn lock(&self) -> Result<(), Error> {
         self.ask("lock", &[]).map(drop)
@@ -105,9 +98,9 @@ impl Scotoma {
         Ok(Stream { conn })
     }
 
-    /// A stream that replaces every issued handle with its secret's value.
-    /// Needs a grant; a handle whose secret the grant does not cover is an
-    /// error. **Its output carries secrets**: send it to the thing that
+    /// A stream that replaces each `[scotoma:NAME]` with that secret's value.
+    /// Needs a grant; a placeholder for a secret the grant does not cover is
+    /// an error, and one for a secret that does not exist is left alone. **Its output carries secrets**: send it to the thing that
     /// executes, never to a model, a log or a transcript. Prefer
     /// [`Self::run`], where the value never reaches the caller at all.
     pub fn substituter(&self) -> Result<Stream, Error> {
@@ -145,9 +138,9 @@ impl Scotoma {
     }
 
     /// Have the resident process run `command`, in this process's directory
-    /// and environment, with every handle in it replaced by its secret. The
-    /// value never reaches the caller: output arrives already redacted, a
-    /// value that went in through a handle coming back as that handle.
+    /// and environment, with every `[scotoma:NAME]` in it replaced by that
+    /// secret. The value never reaches the caller: output arrives already
+    /// redacted, the value reading as `[scotoma:NAME]` again.
     /// Returns the command's exit code (1 if it had none). Needs a grant.
     pub fn run(
         &self,

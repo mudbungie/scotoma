@@ -71,23 +71,23 @@ fn secrets_are_set_listed_and_removed() {
 }
 
 #[test]
-fn a_handle_substitutes_for_a_caller_that_holds_a_grant() {
+fn a_placeholder_substitutes_for_a_caller_that_holds_a_grant() {
     let unlocked = Unlocked::new("y\ny\n");
     unlocked.client().set("pw", "hunter2").unwrap();
     unlocked.client().set("other", "swordfish").unwrap();
     let client = unlocked.granted(&["pw"]);
-    let handle = client.issue("pw").unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     let command = format!("curl -u admin:{handle} -H 'X: {handle}'");
     assert_eq!(
         client.substitute(&command).unwrap(),
         "curl -u admin:hunter2 -H 'X: hunter2'"
     );
-    assert_eq!(
-        unlocked.log().split_off(3),
-        ["issue pw", "use pw", "use pw"]
-    );
+    assert_eq!(unlocked.log().split_off(3), ["use pw", "use pw"]);
 
-    assert!(matches!(client.issue("other"), Err(Error::Denied(_))));
+    assert!(matches!(
+        client.substitute("[scotoma:other]"),
+        Err(Error::Denied(_))
+    ));
     let narrow = unlocked.granted(&["other"]);
     assert!(
         matches!(narrow.substitute(&handle), Err(Error::Denied(why)) if why.contains("\"pw\""))
@@ -123,12 +123,12 @@ fn a_match_decided_only_at_the_end_is_still_caught() {
 }
 
 #[test]
-fn the_resident_process_runs_the_command_and_hands_back_the_handle() {
+fn the_resident_process_runs_the_command_and_hands_back_the_placeholder() {
     let unlocked = Unlocked::new("y\n");
     unlocked.client().set("pw", "hunter2").unwrap();
     unlocked.client().set("other", "swordfish").unwrap();
     let client = unlocked.granted(&[]);
-    let handle = client.issue("pw").unwrap();
+    let handle = "[scotoma:pw]".to_owned();
     let script = "test \"$1\" = hunter2 && echo \"out $1\" && echo \"err $1 swordfish\" >&2";
     let ran = run(&client, &["sh", "-c", script, "sh", &handle]).unwrap();
     assert_eq!(
@@ -140,7 +140,7 @@ fn the_resident_process_runs_the_command_and_hands_back_the_handle() {
         )
     );
     assert_eq!(
-        unlocked.log().split_off(4),
+        unlocked.log().split_off(3),
         ["use pw", "redact pw", "redact pw", "redact other"]
     );
 }

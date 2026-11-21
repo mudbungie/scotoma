@@ -125,9 +125,6 @@ impl Resident<'_> {
                 .store
                 .names()
                 .map(|names| names.join("\n").into_bytes()),
-            (b"issue", [name]) => vault
-                .issue(name, &self.grant(&token)?)
-                .map(String::into_bytes),
             (b"grant", [limits, names @ ..]) => self.approve(&vault, &token, limits, names),
             (b"lock", []) => {
                 self.stop.store(true, Ordering::SeqCst);
@@ -201,14 +198,13 @@ impl Resident<'_> {
             let uuid = |half: &[u8]| audit::uuid(<[u8; 16]>::try_from(half).unwrap_or_default());
             (uuid(id), uuid(token))
         })?;
-        // A grant minted from another names its parent where a handle would be.
         let from = parent.as_ref().map_or("-", |parent| parent.id.as_str());
         for secret in scope {
             vault.audit.record(Act {
                 event: "grant",
                 secret,
-                handle: from,
                 grant: &id,
+                note: from,
             })?;
         }
         let names = names.iter().map(|&name| name.to_owned()).collect();

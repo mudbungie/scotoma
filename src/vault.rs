@@ -4,7 +4,7 @@
 //! public; other processes reach it through the socket (`resident.rs`).
 
 use crate::Error;
-use crate::audit::{self, Act, Audit};
+use crate::audit::{Act, Audit};
 use crate::crypt::{self, Secret};
 use crate::grant::Grant;
 use crate::store::{self, Store};
@@ -51,8 +51,8 @@ impl Vault {
         self.audit.record(Act {
             event,
             secret,
-            handle: "-",
             grant: "-",
+            note: "-",
         })
     }
 
@@ -67,40 +67,15 @@ impl Vault {
         self.log("remove", name)
     }
 
-    /// Mint a handle for a secret the grant covers.
-    pub fn issue(&self, name: &str, grant: &Grant) -> Result<String, Error> {
-        if self.store.get(name)?.is_none() {
-            return Err(Error::Unknown(name.to_owned()));
-        }
-        allow(grant, name)?;
-        let handle = audit::uuid(crypt::random(&self.entropy)?);
-        let act = Act {
-            event: audit::ISSUE,
-            secret: name,
-            handle: &handle,
-            grant: &grant.id,
-        };
-        self.audit.record(act)?;
-        Ok(handle)
-    }
-
-    /// A flow that replaces every issued handle with its secret's value, for
-    /// the secrets `grant` covers.
+    /// A flow that replaces each secret's placeholder, `[scotoma:NAME]`, with
+    /// its value. A placeholder for a secret the grant does not cover is an
+    /// error; one for a secret that does not exist is left as it is.
     pub fn substituter(&self, grant: Grant) -> Result<Flow, Error> {
-        let secrets = self.store.all()?;
-        let value = |name: &str| secrets.iter().find(|(known, _)| known == name);
-        let entries = self
-            .audit
-            .issued()?
-            .into_iter()
-            .filter_map(|(handle, name)| {
-                value(&name).map(|(_, value)| Entry {
-                    find: handle.clone().into_bytes(),
-                    put: value.clone().into_bytes(),
-                    secret: name,
-                    handle,
-                })
-            });
+        let entries = self.store.all()?.into_iter().map(|(name, value)| Entry {
+            find: marker(&name),
+            put: value.into_bytes(),
+            secret: name,
+        });
         Ok(self.flow(entries.collect(), "use", grant, false))
     }
 
@@ -114,23 +89,17 @@ impl Vault {
         Ok(self.flow(self.values()?, "leak", Grant::none(), true))
     }
 
-    /// Ready a command: its words with handles substituted, and the flow that
-    /// redacts its output. A value that went in through a handle comes back
-    /// out as that same handle; any other secret as `[scotoma:NAME]`.
+    /// Ready a command: its words with placeholders substituted, and the
+    /// flow that redacts its output, which turns each value back into the
+    /// placeholder it came from.
     pub fn arm(&self, command: &[String], grant: Grant) -> Result<(Vec<String>, Flow), Error> {
-        let mut entries = self.values()?;
         let mut substituter = self.substituter(grant)?;
-        let (mut words, mut used) = (Vec::new(), Vec::new());
+        let mut words = Vec::new();
         for word in command {
-            let (bytes, fired) = substituter.feed(word.as_bytes(), true)?;
+            let (bytes, _) = substituter.feed(word.as_bytes(), true)?;
             words.push(String::from_utf8_lossy(&bytes).into_owned());
-            used.extend(fired);
         }
-        for entry in &mut entries {
-            let handle = used.iter().find(|used| used.secret == entry.secret);
-            entry.put = handle.map_or(entry.put.clone(), |used| used.handle.clone().into_bytes());
-        }
-        Ok((words, self.flow(entries, "redact", Grant::none(), false)))
+        self.redactor().map(|output| (words, output))
     }
 
     /// What to look for on the way out: every stored value, as stored and as
@@ -142,9 +111,8 @@ impl Vault {
             for find in [json(&value), value] {
                 entries.push(Entry {
                     find: find.into_bytes(),
-                    put: format!("[scotoma:{name}]").into_bytes(),
+                    put: marker(&name),
                     secret: name.clone(),
-                    handle: "-".to_owned(),
                 });
             }
         }
@@ -169,6 +137,12 @@ fn allow(grant: &Grant, name: &str) -> Result<(), Error> {
     } else {
         Err(Error::Denied(format!("the grant does not cover {name:?}")))
     }
+}
+
+/// A secret's placeholder: what a model writes to use it, and what it reads
+/// where the value was.
+fn marker(name: &str) -> Vec<u8> {
+    format!("[scotoma:{name}]").into_bytes()
 }
 
 /// How a value reads inside a JSON string, as the common serializers write it.
@@ -212,8 +186,12 @@ impl Flow {
     /// BEFORE its bytes are released: if either fails, nothing comes out.
     pub fn feed(&mut self, chunk: &[u8], last: bool) -> Result<(Vec<u8>, Vec<Entry>), Error> {
         let (bytes, fired) = self.filter.feed(chunk, last);
+        fired
+            .iter()
+            .try_for_each(|entry| allow(&self.grant, &entry.secret))?;
         // One flow (one command, one stream) is one use, however many
-        // handles it holds; a flow that matches nothing costs nothing.
+        // placeholders it holds; a flow that matches nothing costs nothing,
+        // and neither does one that is refused.
         if !(self.paid || fired.is_empty()) {
             self.paid = self.grant.charge();
             if !self.paid {
@@ -221,13 +199,12 @@ impl Flow {
             }
         }
         for entry in &fired {
-            allow(&self.grant, &entry.secret)?;
             let (event, grant) = (self.event, self.grant.id.as_str());
             self.audit.record(Act {
                 event,
                 secret: &entry.secret,
-                handle: &entry.handle,
                 grant,
+                note: "-",
             })?;
         }
         match fired.first() {
