@@ -35,36 +35,36 @@ impl Vault {
     }
 
     /// The same vault, logging as `actor`.
-    pub fn acting(&self, actor: &str) -> Result<Self, Error> {
-        store::check(actor)?;
-        let audit = Audit {
-            actor: actor.to_owned(),
-            ..self.audit.clone()
-        };
-        Ok(Self {
-            audit,
+    pub fn acting(&self, actor: &str) -> Self {
+        Self {
+            audit: self.audit.by(actor),
             ..self.clone()
-        })
+        }
     }
 
-    fn log(&self, event: &str, secret: &str) -> Result<(), Error> {
+    fn log(&self, event: &str, secret: &str, grant: &Grant) -> Result<(), Error> {
         self.audit.record(Act {
             event,
             secret,
-            grant: "-",
+            grant: &grant.id,
             note: "-",
         })
     }
 
-    pub fn set(&self, name: &str, value: &str) -> Result<(), Error> {
+    /// Store a value. Changing what a name stands for needs a grant over it.
+    pub fn set(&self, name: &str, value: &str, grant: &Grant) -> Result<(), Error> {
+        store::check(name)?;
+        allow(grant, name)?;
         let nonce = crypt::random(&self.entropy)?;
         self.store.put(name, value, nonce)?;
-        self.log("set", name)
+        self.log("set", name, grant)
     }
 
-    pub fn remove(&self, name: &str) -> Result<(), Error> {
+    pub fn remove(&self, name: &str, grant: &Grant) -> Result<(), Error> {
+        store::check(name)?;
+        allow(grant, name)?;
         self.store.drop(name)?;
-        self.log("remove", name)
+        self.log("remove", name, grant)
     }
 
     /// A flow that replaces each secret's placeholder, `[scotoma:NAME]`, with

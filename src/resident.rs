@@ -2,29 +2,29 @@
 //!
 //! `unlock` turns a password into the key, then serves the vault on a socket
 //! until told to lock. The key is never written anywhere and is gone when
-//! this returns. Its console is the user's side of authorization: a grant is
-//! minted only when the person at the console says yes.
+//! this returns. Who may use what is decided at the desk (`desk.rs`).
 
 use crate::audit::{self, Act};
-use crate::crypt;
+use crate::desk::{Desk, ROOT, Request, Verdict};
 use crate::grant::{self, Grant};
 use crate::vault::{Flow, Vault};
-use crate::{Error, admit, exec, store, wire};
+use crate::{Error, admit, crypt, exec, store, wire};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 const ENTROPY: &str = "/dev/urandom";
+
 /// Where the resident process talks to the user.
-pub struct Console<'a> {
+pub struct Console {
     /// The password, then one line per grant request (`y` approves).
-    pub input: &'a mut (dyn BufRead + Send),
-    /// Prompts and requests.
-    pub output: &'a mut (dyn Write + Send),
+    pub input: Box<dyn BufRead + Send>,
+    /// Prompts, the approver token, and requests.
+    pub output: Box<dyn Write + Send>,
     /// Called with `false` before the password is read and `true` after, so
     /// a terminal can stop echoing.
     pub echo: fn(bool),
@@ -32,6 +32,10 @@ pub struct Console<'a> {
 
 /// Unlock the vault at `home` and serve it until it is locked. A vault that
 /// does not exist yet is created, with the password asked twice.
+///
+/// Once unlocked, the console is shown the approver token: the grant every
+/// other grant descends from. Whoever presents it ([`crate::Scotoma::with_grant`])
+/// may store and remove secrets, answer grant requests and end grants.
 pub fn unlock(home: &Path, console: Console) -> Result<(), Error> {
     serve(home, console, Path::new(ENTROPY))
 }
@@ -43,15 +47,19 @@ pub(crate) fn serve(home: &Path, mut console: Console, entropy: &Path) -> Result
     if UnixStream::connect(&socket).is_err() {
         let _ = fs::remove_file(&socket);
     }
+    let token = crypt::random(entropy).map(audit::uuid)?;
     let listener = UnixListener::bind(&socket).map_err(Error::io(&socket))?;
-    say(
-        &mut console,
-        "unlocked. Grant requests are asked here; `scotoma lock` ends this.\n",
-    );
+    let desk = Arc::new(Desk::new(console.output, token.clone()));
+    desk.say(&format!(
+        "approver token: {token}\n\
+         unlocked. Grant requests are asked here; `scotoma lock` ends this.\n"
+    ));
+    let (seat, input) = (Arc::clone(&desk), console.input);
+    // Detached: a console that is never typed at must not hold up locking.
+    thread::spawn(move || seat.listen(input));
     let resident = Resident {
         vault: Vault::new(home, key, entropy),
-        grants: Mutex::new(Vec::new()),
-        console: Mutex::new(console),
+        desk,
         stop: AtomicBool::new(false),
         socket: socket.clone(),
     };
@@ -78,11 +86,9 @@ pub(crate) fn ask(console: &mut Console, prompt: &str) -> String {
     line.trim_end_matches(['\r', '\n']).to_owned()
 }
 
-struct Resident<'a> {
+struct Resident {
     vault: Vault,
-    /// `(token, grant)`: memory only, gone at lock.
-    grants: Mutex<Vec<(String, Grant)>>,
-    console: Mutex<Console<'a>>,
+    desk: Arc<Desk>,
     stop: AtomicBool,
     socket: PathBuf,
 }
@@ -91,7 +97,15 @@ fn denied<T>(why: &str) -> Result<T, Error> {
     Err(Error::Denied(why.to_owned()))
 }
 
-impl Resident<'_> {
+/// The approver's grant, or nothing.
+fn root(held: Result<Grant, Error>) -> Result<Grant, Error> {
+    match held? {
+        grant if grant.id == ROOT => Ok(grant),
+        _ => denied("only the approver may do that: present the approver token"),
+    }
+}
+
+impl Resident {
     /// One connection: one request, answered.
     fn converse(&self, conn: &UnixStream) {
         let request = wire::recv(conn)
@@ -114,20 +128,63 @@ impl Resident<'_> {
         let [actor, token, op, args @ ..] = fields else {
             return denied("malformed request");
         };
-        let vault = self.vault.acting(&text(actor))?;
-        let (token, words) = (text(token), args.iter().map(text).collect::<Vec<_>>());
+        let (claimed, token) = (text(actor), text(token));
+        store::check(&claimed)?;
+        let held = self.desk.grant(&token);
+        // A grant fixes who its holder is; without one, the caller's word stands.
+        let fixed = held.as_ref().ok().map(|grant| grant.actor.as_str());
+        let name = fixed.filter(|fixed| !fixed.is_empty());
+        let vault = self.vault.acting(name.unwrap_or(&claimed));
+        let words: Vec<String> = args.iter().map(text).collect();
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         let done = |()| Vec::new();
         match (*op, words.as_slice()) {
-            (b"set", [name, value]) => vault.set(name, value).map(done),
-            (b"rm", [name]) => vault.remove(name).map(done),
+            (b"set", [name, value]) => vault.set(name, value, &held?).map(done),
+            (b"rm", [name]) => vault.remove(name, &held?).map(done),
             (b"ls", []) => vault
                 .store
                 .names()
                 .map(|names| names.join("\n").into_bytes()),
-            (b"grant", [limits, names @ ..]) => self.approve(&vault, &token, limits, names),
+            (b"grant", [limits, reason, names @ ..]) => {
+                let parent = if token.is_empty() { None } else { Some(held?) };
+                let asked = Request {
+                    id: String::new(),
+                    actor: claimed,
+                    names: names.iter().map(|&name| name.to_owned()).collect(),
+                    limits: (*limits).to_owned(),
+                    reason: reason.replace(char::is_control, " ").trim().to_owned(),
+                };
+                self.request(&vault, asked, parent, conn)
+            }
+            (b"pending", []) => root(held).map(|_| {
+                let lines = self.desk.pending().into_iter().map(|asked| {
+                    let names = asked.names.join(",");
+                    let fields = [asked.id, asked.actor, names, asked.limits, asked.reason];
+                    wire::pack(&fields.iter().map(String::as_bytes).collect::<Vec<_>>())
+                });
+                let lines: Vec<Vec<u8>> = lines.collect();
+                wire::pack(&lines.iter().map(Vec::as_slice).collect::<Vec<_>>())
+            }),
+            (b"decide", [id, answer @ ("yes" | "no")]) => {
+                let verdict = Verdict {
+                    yes: *answer == "yes",
+                    by: root(held)?,
+                    actor: vault.audit.actor.clone(),
+                };
+                let ended = self.desk.decide(id, verdict)?;
+                ended.map_or(Ok(()), |grant| {
+                    vault.audit.record(Act {
+                        event: "revoke",
+                        secret: &grant.names.join(","),
+                        grant: &grant.id,
+                        note: "-",
+                    })
+                })?;
+                Ok(Vec::new())
+            }
             (b"lock", []) => {
                 self.stop.store(true, Ordering::SeqCst);
+                self.desk.close();
                 // Wake the accept loop so it sees the flag, then take the
                 // socket's name away: by the time the caller hears back, the
                 // vault is locked to everyone.
@@ -135,7 +192,7 @@ impl Resident<'_> {
                 let _ = fs::remove_file(&self.socket);
                 Ok(Vec::new())
             }
-            (b"sub", []) => match self.grant(&token)? {
+            (b"sub", []) => match held? {
                 grant if grant.reveals() => stream(conn, vault.substituter(grant)?),
                 _ => denied("this grant only runs commands: use `scotoma run`"),
             },
@@ -147,85 +204,68 @@ impl Resident<'_> {
                     cwd: cwd.unwrap_or_default(),
                     env: env.unwrap_or_default(),
                 };
-                exec::run(&vault, self.grant(&token)?, command, &place, conn)
+                exec::run(&vault, held?, command, &place, conn)
             }
             _ => denied("unknown request"),
         }
     }
 
-    /// The live grant a token stands for.
-    fn grant(&self, token: &str) -> Result<Grant, Error> {
-        let grants = self.grants.lock().unwrap_or_else(PoisonError::into_inner);
-        match grants.iter().find(|(held, _)| held == token) {
-            Some((_, grant)) if grant.live() => Ok(grant.clone()),
-            Some(_) => denied("the grant has expired or is used up"),
-            None => denied("no grant: ask for one with `scotoma grant`"),
-        }
-    }
-
-    /// Mint a grant and return its token. Whoever presents a grant is
-    /// answered by it: the new grant is bound by that one. Whoever presents
-    /// none is answered by the person at the console.
-    fn approve(
+    /// A grant is asked for. Whoever presents a grant is answered by it at
+    /// once: the new grant is bound by that one. Whoever presents none waits
+    /// for an approver. Every request and its outcome is logged.
+    fn request(
         &self,
         vault: &Vault,
-        token: &str,
-        terms: &str,
-        names: &[&str],
+        mut asked: Request,
+        parent: Option<Grant>,
+        conn: &UnixStream,
     ) -> Result<Vec<u8>, Error> {
-        let Some(limits) = grant::limits(terms) else {
+        let Some(limits) = grant::limits(&asked.limits) else {
             return denied(
                 "not a limit: join a duration (30s, 15m, 1h, 2d), a count of uses (3x) \
                  and `run` with commas",
             );
         };
-        for name in names {
-            store::check(name)?;
+        asked.names.iter().try_for_each(|name| store::check(name))?;
+        if asked.names.is_empty() || asked.reason.is_empty() {
+            return denied("a grant request names its secrets and gives a reason");
         }
-        let scope = if names.is_empty() {
-            vec!["*"]
-        } else {
-            names.to_vec()
-        };
-        let parent = if token.is_empty() {
-            self.consent(&vault.audit.actor, &scope.join(", "), terms)?;
-            None
-        } else {
-            Some(self.grant(token)?)
-        };
         let (id, token) = crypt::random::<32>(&vault.entropy).map(|bytes| {
             let (id, token) = bytes.split_at(16);
             let uuid = |half: &[u8]| audit::uuid(<[u8; 16]>::try_from(half).unwrap_or_default());
             (uuid(id), uuid(token))
         })?;
-        let from = parent.as_ref().map_or("-", |parent| parent.id.as_str());
-        for secret in scope {
-            vault.audit.record(Act {
-                event: "grant",
-                secret,
-                grant: &id,
-                note: from,
-            })?;
+        asked.id = id;
+        let (what, their) = (asked.names.join(","), vault.audit.by(&asked.actor));
+        let line = |event, note| Act {
+            event,
+            secret: &what,
+            grant: &asked.id,
+            note,
+        };
+        let terms = format!("{} {}", asked.limits, asked.reason);
+        their.record(line("request", &terms))?;
+        let verdict = match parent {
+            None => self.desk.ask(asked.clone(), conn),
+            Some(by) => Some(Verdict {
+                yes: true,
+                by,
+                actor: vault.audit.actor.clone(),
+            }),
+        };
+        let Some(verdict) = verdict else {
+            let _ = their.record(line("abandon", "-"));
+            return denied("the request was abandoned");
+        };
+        let event = if verdict.yes { "grant" } else { "refuse" };
+        let from = format!("from {}", verdict.by.id);
+        vault.audit.by(&verdict.actor).record(line(event, &from))?;
+        if !verdict.yes {
+            return denied("refused");
         }
-        let names = names.iter().map(|&name| name.to_owned()).collect();
-        let grant = Grant::mint(id, names, &limits, parent);
-        let mut grants = self.grants.lock().unwrap_or_else(PoisonError::into_inner);
-        grants.push((token.clone(), grant));
+        let grant = Grant::mint(&asked, &limits, verdict.by);
+        self.desk.hold(token.clone(), grant);
         Ok(token.into_bytes())
-    }
-
-    /// Ask the person at the console; only `y` is yes.
-    fn consent(&self, actor: &str, what: &str, terms: &str) -> Result<(), Error> {
-        let limits = grant::describe(terms);
-        let question = format!("grant requested by {actor}: {what} for {limits}\napprove? [y/N] ");
-        let mut console = self.console.lock().unwrap_or_else(PoisonError::into_inner);
-        let answer = ask(&mut console, &question);
-        drop(console);
-        if answer == "y" {
-            Ok(())
-        } else {
-            denied("refused at the console")
-        }
     }
 }
 

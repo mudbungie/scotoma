@@ -81,11 +81,11 @@ impl Unlocked {
     pub fn start(scratch: Scratch, typed: &str, entropy: &Path) -> Self {
         let (home, entropy, console) =
             (scratch.path.clone(), entropy.to_owned(), Shared::default());
-        let (mut input, mut output) = (Cursor::new(typed.to_owned()), console.clone());
+        let (input, output) = (Cursor::new(typed.to_owned()), console.clone());
         let thread = thread::spawn(move || {
             let console = Console {
-                input: &mut input,
-                output: &mut output,
+                input: Box::new(input),
+                output: Box::new(output),
                 echo: |_| (),
             };
             serve(&home, console, &entropy)
@@ -104,12 +104,20 @@ impl Unlocked {
         Scotoma::open(&self.scratch.path, "tester").unwrap()
     }
 
-    /// A client holding a one-hour grant over `names` (none means all). The
-    /// console must have a `y` waiting.
+    /// A client holding the approver token.
+    pub fn root(&self) -> Scotoma {
+        let console = self.console.text();
+        let token = console.split("approver token: ").nth(1).unwrap();
+        self.client().with_grant(token.lines().next().unwrap())
+    }
+
+    /// A client holding a one-hour grant over `names`, minted by the
+    /// approver; over everything, the approver's own.
     pub fn granted(&self, names: &[&str]) -> Scotoma {
-        let client = self.client();
-        let token = client.grant("1h", names).unwrap();
-        client.with_grant(&token)
+        let root = self.root();
+        let minted = |_| root.grant("1h", names, "testing").unwrap();
+        let token = names.first().map(minted);
+        token.map_or(root.clone(), |token| self.client().with_grant(&token))
     }
 
     /// The log as `event secret` pairs.

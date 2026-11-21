@@ -22,16 +22,25 @@ In your terminal:
 ```console
 $ scotoma unlock
 password:
+approver token: 0b9f6c1e-52a7-4d0c-9a57-3d1c2f4e8a10
 unlocked. Grant requests are asked here; `scotoma lock` ends this.
-grant requested by my-agent: api-password for 1h
+grant requested by my-agent: api-password for 1h, run only
+reason: log in to the staging site
 approve? [y/N] y
+```
+
+The approver token is yours: it stores secrets and answers requests.
+
+```console
+$ export SCOTOMA_GRANT=0b9f6c1e-52a7-4d0c-9a57-3d1c2f4e8a10
+$ printf 'hunter2' | scotoma set api-password
 ```
 
 In the agent's:
 
 ```console
-$ printf 'hunter2' | scotoma set api-password
-$ export SCOTOMA_GRANT=$(scotoma grant 1h api-password)     # waits for your "y"
+$ export SCOTOMA_ACTOR=my-agent
+$ export SCOTOMA_GRANT=$(scotoma grant 1h,run api-password log in to the staging site)
 $ scotoma run curl -u 'admin:[scotoma:api-password]' https://example.com/login
 $ scotoma run sh -c 'echo "the password is $1"' sh '[scotoma:api-password]'
 the password is [scotoma:api-password]
@@ -54,23 +63,30 @@ usage: scotoma COMMAND
 
   unlock            read the vault password and serve the vault from this
                     terminal until it is locked; a vault that does not exist
-                    is created. Grant requests are approved here.
+                    is created. Prints the approver token, and asks each
+                    grant request here.
   lock              end the unlocked session; the key and all grants are gone
 
-  grant LIMITS [NAME...]
-                    ask the person at the unlock terminal to let the caller
-                    use the named secrets (none: all); prints a token to put
-                    in SCOTOMA_GRANT. LIMITS joins with commas any of:
+  grant LIMITS NAMES REASON...
+                    ask for a grant over NAMES (joined by commas), saying
+                    why; prints a token to put in SCOTOMA_GRANT. LIMITS joins
+                    with commas any of:
                       30s, 15m, 1h, 2d   how long it lasts
                       3x                 how many commands or streams may
                                          use a secret
                       run                `run` only: `sub` is refused
-                    as in `1h`, `1x,run` or `15m,3x`. With SCOTOMA_GRANT set
-                    nobody is asked: the new grant is minted from that one
-                    and can do nothing that one cannot. Hand it to a subagent.
+                    as in `1h`, `1x,run` or `15m,3x`. An approver decides.
+                    With SCOTOMA_GRANT set nobody is asked: the new grant is
+                    minted from that one and can do nothing that one cannot.
+                    Hand it to a subagent.
+  pending           wait for grant requests and print them, one per line:
+                    ID, who, names, limits, reason             [approver]
+  decide ID yes|no  answer a request; `no` also ends a live grant and
+                    every grant minted from it                 [approver]
 
-  set NAME          store the secret read from stdin (one trailing newline dropped)
-  rm NAME           delete a secret
+  set NAME          store the secret read from stdin (one trailing newline
+                    dropped)                                           [grant]
+  rm NAME           delete a secret                                    [grant]
   ls                list secret names
 
   run CMD [ARG...]  run CMD with each [scotoma:NAME] in its arguments
@@ -84,8 +100,10 @@ usage: scotoma COMMAND
 environment:
   SCOTOMA_HOME      the vault directory (default: $XDG_DATA_HOME/scotoma,
                     else $HOME/.local/share/scotoma)
-  SCOTOMA_ACTOR     who the usage log says did it (default: $USER)
-  SCOTOMA_GRANT     the grant token for commands marked [grant]
+  SCOTOMA_ACTOR     who is asking (default: $USER). A grant keeps the name
+                    it was asked under; its uses are logged as that name.
+  SCOTOMA_GRANT     the grant token for commands marked [grant], or the
+                    approver token, which is a grant over everything
 
 exit: 0 done, 1 failed, 2 usage; `run` exits as CMD did.
 ```
@@ -98,7 +116,8 @@ value is never accepted or printed as an argument, only through stdin.
 
 ```rust
 let vault = scotoma::Scotoma::open(home, "my-harness")?;        // a client; holds no key
-let vault = vault.clone().with_grant(&vault.grant("1h", &["api-password"])?);
+let token = vault.grant("1h,run", &["api-password"], "log in to staging")?;  // an approver decides
+let vault = vault.with_grant(&token);
 
 let command = ["curl", "-u", "admin:[scotoma:api-password]", url];  // as the model wrote it
 let code = vault.run(&command, &mut out, &mut err)?;            // the value never comes here
@@ -129,19 +148,29 @@ is the resident process itself, for a harness that wants to host it.
   the vault on a socket in the vault directory. Every other invocation, and
   the library, is a client. `scotoma lock`, or the process ending, forgets
   the key and every grant.
-- **Grants.** Substituting and running need a grant: a
-  token for named secrets (or all), within limits: a duration, a number of
-  uses, `run` only. One use is one command or stream that substituted a
-  value, however many placeholders it held. A grant is minted when the person at
-  the unlock terminal answers `y`, or from a grant the caller already holds;
-  that one is bound by its parent's limits as well as its own, and nobody is
-  asked. Redaction and the guard need no grant, so detection never lapses.
+- **Grants.** Storing, removing, substituting and running need a grant: a
+  token for named secrets, within limits: a duration, a number of uses,
+  `run` only. One use is one command or stream that substituted a value,
+  however many placeholders it held. Redaction and the guard need no grant,
+  so detection never lapses.
+- **Asking.** A request names its secrets and gives a reason. It waits for
+  an approver: the person at the unlock terminal, or any program holding the
+  approver token (`scotoma pending`, `scotoma decide`; `Scotoma::pending`,
+  `Scotoma::decide`). Automatic approval is such a program; scotoma holds no
+  rules of its own. A caller that already holds a grant is not made to
+  wait: its new grant is minted from the one it holds, bound by both.
+  `decide ID no` on a live grant ends it and everything minted from it.
+- **Identity.** A grant keeps the name it was asked under, and whatever is
+  done with it is logged as that name, whatever the caller claims. Without
+  a grant a name is only a claim.
 - **The usage log** is `audit.tsv`, append-only, one line per act:
-  `unix-seconds  actor  event  secret-name  grant-id  note` (on a `grant`
-  line, the note is the parent grant's id, if it has one). Events are
-  `set`, `remove`, `grant`, `use` (a placeholder was replaced by a value),
-  `redact` (a value was rewritten) and `leak` (a guard refused content). It
-  holds names and identifiers, never a value or a grant token.
+  `unix-seconds  actor  event  secret-names  grant-id  note`. A grant's life
+  reads `request` (note: the limits and the reason), then `grant` or
+  `refuse` (actor: who decided; note: the grant it was minted from) or
+  `abandon`, and perhaps `revoke`. Its work reads `set`, `remove`, `use` (a
+  placeholder was replaced by a value), `redact` (a value was rewritten) and
+  `leak` (a guard refused content). The log holds names and identifiers,
+  never a value or a token.
 - **The placeholder is the name.** `[scotoma:NAME]` stands for the secret's
   current value; whether it fills in is the grant's decision alone. The same
   text is what redaction writes, so a model reads back what it wrote. A
@@ -162,9 +191,9 @@ is the resident process itself, for a harness that wants to host it.
   print it encoded. It stops an agent from reading a secret by asking, not
   one that is trying.
 - **It is not a sandbox.** To a process running as you, the vault files are
-  ciphertext, and the socket gives out no value without a grant. But it can
-  store, replace, remove and list secrets, attach a debugger to the resident
-  process, or read a grant token from the environment of whatever holds one. A grant is a bearer token: guard it like a password
+  ciphertext, and the socket does nothing with a secret without a grant. But
+  it can attach a debugger to the resident process, or read a token from the
+  environment or terminal of whatever holds one, the approver token included. A grant is a bearer token: guard it like a password
   that expires.
 - **Arguments are visible** to other local processes (`ps`) for the life of
   the command, as with any command-line credential.

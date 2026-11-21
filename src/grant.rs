@@ -7,6 +7,7 @@
 //! limits and its parent's: every question below is asked of the whole chain,
 //! so a child can never do what its parent cannot.
 
+use crate::desk::Request;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Clone)]
 pub(crate) struct Grant {
     pub id: String,
+    /// Who holds it, fixed when it was approved: its uses are logged under
+    /// this name whatever the caller says. Empty leaves the caller's word.
+    pub actor: String,
     /// The secrets it covers; empty means all of them.
     pub names: Vec<String>,
     /// Unix seconds after which it is dead.
@@ -40,6 +44,7 @@ impl Grant {
     pub fn none() -> Self {
         Self {
             id: "-".to_owned(),
+            actor: String::new(),
             names: Vec::new(),
             expires: u64::MAX,
             left: Arc::new(AtomicU64::new(u64::MAX)),
@@ -48,14 +53,15 @@ impl Grant {
         }
     }
 
-    pub fn mint(id: String, names: Vec<String>, limits: &Limits, parent: Option<Self>) -> Self {
+    pub fn mint(request: &Request, limits: &Limits, parent: Self) -> Self {
         Self {
-            id,
-            names,
+            id: request.id.clone(),
+            actor: request.actor.clone(),
+            names: request.names.clone(),
             expires: now().saturating_add(limits.seconds),
             left: Arc::new(AtomicU64::new(limits.uses)),
             run_only: limits.run_only,
-            parent: parent.map(Arc::new),
+            parent: Some(Arc::new(parent)),
         }
     }
 

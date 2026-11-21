@@ -16,6 +16,7 @@ fn anything_that_is_not_a_command_prints_usage() {
         &["ls", "extra"],
         &["run"],
         &["grant"],
+        &["decide", "an-id", "maybe"],
     ] {
         let usage = Outcome {
             code: 2,
@@ -57,10 +58,12 @@ fn the_vault_is_found_through_the_environment() {
 fn the_actor_is_named_by_the_environment() {
     let home = Home::unlocked("");
     let vault = ("SCOTOMA_HOME", home.dir.as_str());
-    run_with(&[vault], &["set", "a"], b"1");
-    run_with(&[vault, ("USER", "someone")], &["set", "a"], b"1");
+    let approver = ("SCOTOMA_GRANT", home.grant.as_str());
+    run_with(&[vault, approver], &["set", "a"], b"1");
+    run_with(&[vault, approver, ("USER", "someone")], &["set", "a"], b"1");
+    let agent = ("SCOTOMA_ACTOR", "agent-7");
     run_with(
-        &[vault, ("USER", "someone"), ("SCOTOMA_ACTOR", "agent-7")],
+        &[vault, approver, ("USER", "someone"), agent],
         &["set", "a"],
         b"1",
     );
@@ -106,26 +109,30 @@ fn unlock_serves_until_lock_and_refuses_a_wrong_password() {
 
 #[test]
 fn a_grant_is_asked_for_and_lets_a_secret_be_used_but_not_seen() {
-    let mut home = Home::unlocked("y\nn\n");
+    let mut home = Home::unlocked("y\n");
     home.run(&["set", "pw"], b"hunter2\n");
+    home.grant = String::new();
+    assert!(failed(&home.run(&["set", "pw"], b"mine")));
     assert!(failed(&home.run(&["sub"], b"x")));
 
     home.grant = home
-        .run(&["grant", "1h", "pw"], b"")
+        .run(&["grant", "1h", "pw", "to", "deploy"], b"")
         .out
         .trim_end()
         .to_owned();
     assert_eq!(home.grant.len(), 36);
-    assert!(
-        home.terminal
-            .text()
-            .contains("grant requested by unknown: pw for 1h")
-    );
+    let asked = "grant requested by unknown: pw for 1h\nreason: to deploy\n";
+    assert!(home.terminal.text().contains(asked));
     // Holding a grant, the caller is answered by it: a narrower grant is
     // minted and nobody is asked.
-    assert_eq!(home.run(&["grant", "1x,run"], b"").out.len(), 37);
+    assert_eq!(
+        home.run(&["grant", "1x,run", "pw", "helper"], b"")
+            .out
+            .len(),
+        37
+    );
     assert_eq!(home.terminal.text().matches("approve?").count(), 1);
-    assert!(failed(&home.run(&["grant", "soon"], b"")));
+    assert!(failed(&home.run(&["grant", "soon", "pw", "why"], b"")));
 
     let handle = "[scotoma:pw]";
     let command = format!("curl -u admin:{handle}");
@@ -169,22 +176,24 @@ fn redact_rewrites_and_guard_refuses() {
 
 #[test]
 fn failures_exit_1_and_say_why() {
-    let home = Home::unlocked("");
+    let mut home = Home::unlocked("");
     assert!(failed(&home.run(&["rm", "absent"], b"")));
     assert!(failed(&home.run(&["set", "pw"], b"\xff")));
     assert!(failed(&home.run(&["set", "pw"], b"")));
+    home.grant = String::new();
     assert!(failed(&home.run(&["run", "true"], b"")));
+    assert!(failed(&home.run(&["pending"], b"")));
+    assert!(failed(&home.run(&["decide", "an-id", "yes"], b"")));
 }
 
 #[test]
 fn broken_streams_are_failures() {
-    let mut home = Home::unlocked("y\ny\n");
+    let home = Home::unlocked("");
     home.run(&["set", "pw"], b"hunter2");
-    home.grant = home.run(&["grant", "1h"], b"").out.trim_end().to_owned();
     let env = home.env();
     let cases: [&[&str]; 5] = [
         &["ls"],
-        &["grant", "1h"],
+        &["grant", "1h", "pw", "why"],
         &["sub"],
         &["redact"],
         &["run", "echo", "hi"],
@@ -198,4 +207,28 @@ fn broken_streams_are_failures() {
     }
     let (code, err) = drive(&env, &["redact"], &mut Broken, &mut Vec::new());
     assert!(code == 1 && err.starts_with("scotoma: \"input\""), "{err}");
+}
+
+#[test]
+fn an_approver_sees_what_is_asked_and_decides() {
+    let home = Home::unlocked("");
+    let dir = home.dir.clone();
+    let ask = move || {
+        let env = [("SCOTOMA_HOME", dir.as_str()), ("SCOTOMA_ACTOR", "agent-7")];
+        run_with(&env, &["grant", "15m,run", "pw,db", "to", "deploy"], b"")
+    };
+    let asker = std::thread::spawn(ask.clone());
+    let waiting = home.run(&["pending"], b"").out;
+    let fields: Vec<&str> = waiting.trim_end().split('\t').collect();
+    assert_eq!(fields[1..], ["agent-7", "pw,db", "15m,run", "to deploy"]);
+    let (code, err) = drive(&home.env(), &["pending"], &mut &b""[..], &mut Broken);
+    assert!(code == 1 && err.starts_with("scotoma: \"output\""));
+    assert_eq!(home.run(&["decide", fields[0], "yes"], b"").code, 0);
+    assert_eq!(asker.join().unwrap().out.len(), 37);
+
+    let asker = std::thread::spawn(ask);
+    let waiting = home.run(&["pending"], b"").out;
+    let id = waiting.split('\t').next().unwrap();
+    assert_eq!(home.run(&["decide", id, "no"], b"").code, 0);
+    assert!(failed(&asker.join().unwrap()));
 }

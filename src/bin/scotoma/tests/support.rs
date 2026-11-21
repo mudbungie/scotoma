@@ -1,6 +1,7 @@
 //! Fake streams, and a vault unlocked on a thread.
 
 use crate::cli::{self, Streams};
+use scotoma::Console;
 use std::fs;
 use std::io::{self, BufRead, Cursor, Read, Write};
 use std::path::PathBuf;
@@ -80,9 +81,15 @@ pub(super) fn drive(
             .map(|(_, value)| (*value).to_owned())
     };
     let mut err = Vec::new();
+    let nobody = Console {
+        input: Box::new(io::empty()),
+        output: Box::new(io::sink()),
+        echo: |_| (),
+    };
     let code = cli::run(
         &args,
         &env,
+        nobody,
         Streams {
             input,
             out,
@@ -116,7 +123,7 @@ pub(super) struct Home {
 
 impl Home {
     /// A new vault unlocked with password `pw`; `answers` is what gets typed
-    /// at the unlock terminal afterwards.
+    /// at the unlock terminal afterwards. `grant` starts as the approver token.
     pub(super) fn unlocked(answers: &str) -> Self {
         let unique = format!(
             "scotoma-cli-{}-{}",
@@ -138,21 +145,26 @@ impl Home {
     }
 
     pub(super) fn unlock(&mut self, typed: &str) {
-        let (dir, mut terminal, typed) =
-            (self.dir.clone(), self.terminal.clone(), typed.to_owned());
+        let (dir, terminal, typed) = (self.dir.clone(), self.terminal.clone(), typed.to_owned());
         let sessions = |terminal: &Shared| terminal.text().matches("unlocked").count();
         let before = sessions(&self.terminal);
         let unlock = thread::spawn(move || {
             let args = ["unlock".to_owned()];
             let env = |key: &str| (key == "SCOTOMA_HOME").then(|| dir.clone());
-            let (mut input, mut out) = (Cursor::new(typed), Vec::new());
+            let console = Console {
+                input: Box::new(Cursor::new(typed)),
+                output: Box::new(terminal.clone()),
+                echo: |_| (),
+            };
+            let (mut out, mut err) = (Vec::new(), terminal);
             cli::run(
                 &args,
                 &env,
+                console,
                 Streams {
-                    input: &mut input,
+                    input: &mut io::empty(),
                     out: &mut out,
-                    err: &mut terminal,
+                    err: &mut err,
                 },
             )
         });
@@ -160,6 +172,10 @@ impl Home {
             thread::sleep(Duration::from_millis(2));
         }
         self.unlock = Some(unlock);
+        // The approver token, as the person at the terminal reads it.
+        let shown = self.terminal.text();
+        let token = shown.rsplit("approver token: ").next().unwrap_or_default();
+        self.grant = token.lines().next().unwrap_or_default().to_owned();
     }
 
     pub(super) fn env(&self) -> [(&str, &str); 2] {

@@ -3,7 +3,7 @@
 //! Nothing here holds a key or reads the vault's files. Every call is one
 //! conversation over the vault's socket.
 
-use crate::{Error, store, wire};
+use crate::{Error, Request, store, wire};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -56,12 +56,14 @@ impl Scotoma {
         reply(&conn).map(|body| String::from_utf8_lossy(&body).into_owned())
     }
 
-    /// Store `value` under `name`, replacing any previous value.
+    /// Store `value` under `name`, replacing any previous value. Needs a
+    /// grant that covers the name; the approver token covers every name.
     pub fn set(&self, name: &str, value: &str) -> Result<(), Error> {
         self.ask("set", &[name, value]).map(drop)
     }
 
-    /// Delete a secret. Its placeholder stops substituting.
+    /// Delete a secret. Its placeholder stops substituting. Needs a grant
+    /// that covers the name.
     pub fn remove(&self, name: &str) -> Result<(), Error> {
         self.ask("rm", &[name]).map(drop)
     }
@@ -72,19 +74,55 @@ impl Scotoma {
         Ok(names.lines().map(str::to_owned).collect())
     }
 
-    /// Ask for a grant over `names` (none means every secret) and return its
-    /// token. `limits` joins with commas any of: a duration (`30s`, `15m`,
-    /// `1h`, `2d`), a count of uses (`3x`: that many commands or streams may
-    /// use a secret), and `run` (the holder may [`Self::run`] but not
-    /// [`Self::substitute`]); for example `1h`, `1x,run`.
+    /// Ask for a grant over `names` and return its token. `limits` joins
+    /// with commas any of: a duration (`30s`, `15m`, `1h`, `2d`), a count of
+    /// uses (`3x`: that many commands or streams may use a secret), and `run`
+    /// (the holder may [`Self::run`] but not [`Self::substitute`]); for
+    /// example `1h`, `1x,run`. `reason` is shown to whoever decides and kept
+    /// in the usage log.
     ///
-    /// Without a grant of its own, this blocks until the person at the
-    /// resident process's console answers. With one ([`Self::with_grant`]),
-    /// nobody is asked: the new grant is minted from the one presented, is
-    /// bound by that one's limits as well as its own, and dies with it. That
-    /// is the grant to hand a subagent.
-    pub fn grant(&self, limits: &str, names: &[&str]) -> Result<String, Error> {
-        self.ask("grant", &[&[limits], names].concat())
+    /// Without a grant of its own, this blocks until an approver answers:
+    /// the person at the resident process's console, or whoever calls
+    /// [`Self::decide`]. With one ([`Self::with_grant`]), nobody is asked: the
+    /// new grant is minted from the one presented, is bound by that one's
+    /// limits as well as its own, and dies with it. That is the grant to
+    /// hand a subagent.
+    ///
+    /// The name this client was opened with becomes the grant's: whatever is
+    /// done with the grant is logged under it.
+    pub fn grant(&self, limits: &str, names: &[&str], reason: &str) -> Result<String, Error> {
+        self.ask("grant", &[&[limits, reason], names].concat())
+    }
+
+    /// The grant requests waiting for an answer. Blocks until there is one;
+    /// empty means the vault was locked. Needs the approver token.
+    pub fn pending(&self) -> Result<Vec<Request>, Error> {
+        let conn = self.begin("pending", &[])?;
+        let text = |bytes: &Vec<u8>| String::from_utf8_lossy(bytes).into_owned();
+        let request = |packed: Vec<u8>| {
+            let fields = wire::unpack(&packed).unwrap_or_default();
+            let mut fields = fields.iter().map(text);
+            let mut next = || fields.next().unwrap_or_default();
+            let (id, actor, names) = (next(), next(), next());
+            Request {
+                id,
+                actor,
+                names: names.split(',').map(str::to_owned).collect(),
+                limits: next(),
+                reason: next(),
+            }
+        };
+        let packed = reply(&conn)?;
+        let requests = wire::unpack(&packed).unwrap_or_default();
+        Ok(requests.into_iter().map(request).collect())
+    }
+
+    /// Answer the request with this id; or, with `approve` false, end the
+    /// live grant with this id, and every grant minted from it. Needs the
+    /// approver token. The decision is logged under this client's name.
+    pub fn decide(&self, id: &str, approve: bool) -> Result<(), Error> {
+        let answer = if approve { "yes" } else { "no" };
+        self.ask("decide", &[id, answer]).map(drop)
     }
 
     /// End the resident process. The key and every grant are gone.

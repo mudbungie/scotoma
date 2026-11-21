@@ -49,6 +49,7 @@ fn a_locked_vault_answers_nothing() {
     let client = Scotoma::open(&scratch.path, "tester").unwrap();
     assert!(matches!(client.set("pw", "v"), Err(Error::Locked)));
     assert!(matches!(client.names(), Err(Error::Locked)));
+    assert!(matches!(client.pending(), Err(Error::Locked)));
     assert!(matches!(client.substitute("x"), Err(Error::Locked)));
     assert!(matches!(client.redact("x"), Err(Error::Locked)));
     assert!(matches!(client.check("x"), Err(Error::Locked)));
@@ -60,21 +61,21 @@ fn secrets_are_set_listed_and_removed() {
     let unlocked = Unlocked::new("");
     let client = unlocked.client();
     assert_eq!(client.names().unwrap(), [""; 0]);
-    client.set("b", "2").unwrap();
-    client.set("a", "1").unwrap();
+    unlocked.root().set("b", "2").unwrap();
+    unlocked.root().set("a", "1").unwrap();
     assert_eq!(client.names().unwrap(), ["a", "b"]);
-    client.remove("a").unwrap();
+    unlocked.root().remove("a").unwrap();
     assert_eq!(client.names().unwrap(), ["b"]);
-    assert!(matches!(client.remove("a"), Err(Error::Unknown(name)) if name == "a"));
-    assert!(matches!(client.set("b", ""), Err(Error::Empty)));
+    assert!(matches!(unlocked.root().remove("a"), Err(Error::Unknown(name)) if name == "a"));
+    assert!(matches!(unlocked.root().set("b", ""), Err(Error::Empty)));
     assert_eq!(unlocked.log(), ["set b", "set a", "remove a"]);
 }
 
 #[test]
 fn a_placeholder_substitutes_for_a_caller_that_holds_a_grant() {
     let unlocked = Unlocked::new("y\ny\n");
-    unlocked.client().set("pw", "hunter2").unwrap();
-    unlocked.client().set("other", "swordfish").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
+    unlocked.root().set("other", "swordfish").unwrap();
     let client = unlocked.granted(&["pw"]);
     let handle = "[scotoma:pw]".to_owned();
     let command = format!("curl -u admin:{handle} -H 'X: {handle}'");
@@ -82,7 +83,7 @@ fn a_placeholder_substitutes_for_a_caller_that_holds_a_grant() {
         client.substitute(&command).unwrap(),
         "curl -u admin:hunter2 -H 'X: hunter2'"
     );
-    assert_eq!(unlocked.log().split_off(3), ["use pw", "use pw"]);
+    assert_eq!(unlocked.log().split_off(4), ["use pw", "use pw"]);
 
     assert!(matches!(
         client.substitute("[scotoma:other]"),
@@ -98,7 +99,7 @@ fn a_placeholder_substitutes_for_a_caller_that_holds_a_grant() {
 fn redaction_rewrites_and_the_guard_refuses() {
     let unlocked = Unlocked::new("");
     let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
     assert_eq!(client.redact("got hunter2!").unwrap(), "got [scotoma:pw]!");
     assert!(client.check("nothing to see").is_ok());
     assert!(matches!(client.check("it is hunter2"), Err(Error::Leak(name)) if name == "pw"));
@@ -116,8 +117,8 @@ fn redaction_rewrites_and_the_guard_refuses() {
 fn a_match_decided_only_at_the_end_is_still_caught() {
     let unlocked = Unlocked::new("");
     let client = unlocked.client();
-    client.set("short", "ab").unwrap();
-    client.set("long", "abc").unwrap();
+    unlocked.root().set("short", "ab").unwrap();
+    unlocked.root().set("long", "abc").unwrap();
     assert_eq!(client.redact("ab").unwrap(), "[scotoma:short]");
     assert!(matches!(client.check("ab"), Err(Error::Leak(name)) if name == "short"));
 }
@@ -125,8 +126,8 @@ fn a_match_decided_only_at_the_end_is_still_caught() {
 #[test]
 fn the_resident_process_runs_the_command_and_hands_back_the_placeholder() {
     let unlocked = Unlocked::new("y\n");
-    unlocked.client().set("pw", "hunter2").unwrap();
-    unlocked.client().set("other", "swordfish").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
+    unlocked.root().set("other", "swordfish").unwrap();
     let client = unlocked.granted(&[]);
     let handle = "[scotoma:pw]".to_owned();
     let script = "test \"$1\" = hunter2 && echo \"out $1\" && echo \"err $1 swordfish\" >&2";
@@ -140,7 +141,7 @@ fn the_resident_process_runs_the_command_and_hands_back_the_placeholder() {
         )
     );
     assert_eq!(
-        unlocked.log().split_off(3),
+        unlocked.log().split_off(2),
         ["use pw", "redact pw", "redact pw", "redact other"]
     );
 }
@@ -164,7 +165,7 @@ fn a_command_runs_where_its_caller_stands_and_exits_as_itself() {
 #[test]
 fn output_is_withheld_when_its_redaction_cannot_be_logged() {
     let unlocked = Unlocked::new("y\n");
-    unlocked.client().set("pw", "hunter2").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
     let client = unlocked.granted(&[]);
     let log = unlocked.scratch.path.join("audit.tsv");
     let script = format!("rm {0} && mkdir {0} && echo hunter2", log.display());

@@ -1,6 +1,6 @@
 //! The command line, written against the library's public surface only.
 
-use scotoma::{Console, Error, Scotoma, Stream};
+use scotoma::{Console, Error, Request, Scotoma, Stream};
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -10,23 +10,30 @@ usage: scotoma COMMAND
 
   unlock            read the vault password and serve the vault from this
                     terminal until it is locked; a vault that does not exist
-                    is created. Grant requests are approved here.
+                    is created. Prints the approver token, and asks each
+                    grant request here.
   lock              end the unlocked session; the key and all grants are gone
 
-  grant LIMITS [NAME...]
-                    ask the person at the unlock terminal to let the caller
-                    use the named secrets (none: all); prints a token to put
-                    in SCOTOMA_GRANT. LIMITS joins with commas any of:
+  grant LIMITS NAMES REASON...
+                    ask for a grant over NAMES (joined by commas), saying
+                    why; prints a token to put in SCOTOMA_GRANT. LIMITS joins
+                    with commas any of:
                       30s, 15m, 1h, 2d   how long it lasts
                       3x                 how many commands or streams may
                                          use a secret
                       run                `run` only: `sub` is refused
-                    as in `1h`, `1x,run` or `15m,3x`. With SCOTOMA_GRANT set
-                    nobody is asked: the new grant is minted from that one
-                    and can do nothing that one cannot. Hand it to a subagent.
+                    as in `1h`, `1x,run` or `15m,3x`. An approver decides.
+                    With SCOTOMA_GRANT set nobody is asked: the new grant is
+                    minted from that one and can do nothing that one cannot.
+                    Hand it to a subagent.
+  pending           wait for grant requests and print them, one per line:
+                    ID, who, names, limits, reason             [approver]
+  decide ID yes|no  answer a request; `no` also ends a live grant and
+                    every grant minted from it                 [approver]
 
-  set NAME          store the secret read from stdin (one trailing newline dropped)
-  rm NAME           delete a secret
+  set NAME          store the secret read from stdin (one trailing newline
+                    dropped)                                           [grant]
+  rm NAME           delete a secret                                    [grant]
   ls                list secret names
 
   run CMD [ARG...]  run CMD with each [scotoma:NAME] in its arguments
@@ -40,8 +47,10 @@ usage: scotoma COMMAND
 environment:
   SCOTOMA_HOME      the vault directory (default: $XDG_DATA_HOME/scotoma,
                     else $HOME/.local/share/scotoma)
-  SCOTOMA_ACTOR     who the usage log says did it (default: $USER)
-  SCOTOMA_GRANT     the grant token for commands marked [grant]
+  SCOTOMA_ACTOR     who is asking (default: $USER). A grant keeps the name
+                    it was asked under; its uses are logged as that name.
+  SCOTOMA_GRANT     the grant token for commands marked [grant], or the
+                    approver token, which is a grant over everything
 
 exit: 0 done, 1 failed, 2 usage; `run` exits as CMD did.
 ";
@@ -55,9 +64,10 @@ pub struct Streams<'a> {
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// Run one command line; the return value is the process exit code.
-pub fn run(args: &[String], env: Env, mut streams: Streams) -> u8 {
+/// `console` is the terminal `unlock` owns while the vault is unlocked.
+pub fn run(args: &[String], env: Env, console: Console, mut streams: Streams) -> u8 {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    match dispatch(&args, env, &mut streams) {
+    match dispatch(&args, env, console, &mut streams) {
         Ok(Some(code)) => code,
         Ok(None) => {
             let _ = streams.err.write_all(USAGE.as_bytes());
@@ -71,7 +81,12 @@ pub fn run(args: &[String], env: Env, mut streams: Streams) -> u8 {
 }
 
 /// `Ok(None)` means the arguments were not a command.
-fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>, Error> {
+fn dispatch(
+    args: &[&str],
+    env: Env,
+    console: Console,
+    streams: &mut Streams,
+) -> Result<Option<u8>, Error> {
     let Some(home) = home(env) else {
         return Ok(None);
     };
@@ -79,21 +94,29 @@ fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>
     let vault = Scotoma::open(&home, actor.as_deref().unwrap_or("unknown"))?;
     let vault = vault.with_grant(&env("SCOTOMA_GRANT").unwrap_or_default());
     match args {
-        ["unlock"] => {
-            let console = Console {
-                input: streams.input,
-                output: streams.err,
-                echo,
-            };
-            scotoma::unlock(&home, console)?;
-        }
+        ["unlock"] => scotoma::unlock(&home, console)?,
         ["lock"] => vault.lock()?,
-        ["grant", limits, names @ ..] => {
-            write(
-                streams.out,
-                format!("{}\n", vault.grant(limits, names)?).as_bytes(),
-            )?;
+        ["grant", limits, names, reason @ ..] => {
+            let names: Vec<&str> = names.split(',').collect();
+            let token = vault.grant(limits, &names, &reason.join(" "))?;
+            write(streams.out, format!("{token}\n").as_bytes())?;
         }
+        ["pending"] => {
+            let line = |all: String, asked: &Request| {
+                let names = asked.names.join(",");
+                let Request {
+                    id,
+                    actor,
+                    limits,
+                    reason,
+                    ..
+                } = asked;
+                format!("{all}{id}\t{actor}\t{names}\t{limits}\t{reason}\n")
+            };
+            let lines = vault.pending()?.iter().fold(String::new(), line);
+            write(streams.out, lines.as_bytes())?;
+        }
+        ["decide", id, answer @ ("yes" | "no")] => vault.decide(id, *answer == "yes")?,
         ["set", name] => {
             let mut value = String::new();
             streams
@@ -121,7 +144,7 @@ fn dispatch(args: &[&str], env: Env, streams: &mut Streams) -> Result<Option<u8>
 
 /// Stop or resume the terminal's echo, for the password. Off a terminal
 /// `stty` fails and nothing changes, which is right.
-fn echo(on: bool) {
+pub fn echo(on: bool) {
     let mode = if on { "echo" } else { "-echo" };
     let _ = Command::new("stty")
         .arg(mode)

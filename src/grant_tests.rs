@@ -54,10 +54,21 @@ fn limits_are_terms_joined_by_commas() {
     assert_eq!(describe("1x"), "1 use");
 }
 
+fn asked(id: &str, names: &[&str]) -> Request {
+    Request {
+        id: id.into(),
+        actor: "agent".into(),
+        names: names.iter().map(|&name| name.to_owned()).collect(),
+        limits: String::new(),
+        reason: String::new(),
+    }
+}
+
 #[test]
 fn a_grant_minted_from_another_is_bound_by_both() {
-    let parent = Grant::mint("p".into(), vec!["a".into()], &all(3600, 1, true), None);
-    let child = Grant::mint("c".into(), Vec::new(), &all(60, 5, false), Some(parent));
+    let parent = Grant::mint(&asked("p", &["a"]), &all(3600, 1, true), Grant::none());
+    let child = Grant::mint(&asked("c", &["a", "b"]), &all(60, 5, false), parent);
+    assert_eq!((child.id.as_str(), child.actor.as_str()), ("c", "agent"));
     assert!(child.covers("a") && !child.covers("b"));
     assert!(child.live() && !child.reveals());
     assert!(Grant::none().reveals());
@@ -65,16 +76,6 @@ fn a_grant_minted_from_another_is_bound_by_both() {
     assert!(child.charge());
     assert!(!child.charge() && !child.live());
 
-    let spent = Grant::mint("s".into(), Vec::new(), &all(60, 0, false), None);
+    let spent = Grant::mint(&asked("s", &["a"]), &all(60, 0, false), Grant::none());
     assert!(!spent.charge() && !spent.live() && spent.reveals());
-}
-
-#[test]
-fn a_grant_dies_at_its_expiry() {
-    assert!(Grant::none().live());
-    let dead = Grant {
-        expires: now(),
-        ..Grant::none()
-    };
-    assert!(!dead.live());
 }

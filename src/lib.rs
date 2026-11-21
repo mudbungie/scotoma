@@ -34,6 +34,7 @@ mod admit;
 mod audit;
 mod client;
 mod crypt;
+mod desk;
 mod error;
 mod exec;
 mod grant;
@@ -46,5 +47,6 @@ mod vault;
 mod wire;
 
 pub use client::{Scotoma, Stream};
+pub use desk::Request;
 pub use error::Error;
 pub use resident::{Console, unlock};

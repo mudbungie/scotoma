@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **The approver seat.** `unlock` prints an approver token: a grant over
+  everything. Its holder answers grant requests (`scotoma pending`,
+  `scotoma decide ID yes|no`; `Scotoma::pending`, `Scotoma::decide`) alongside
+  the console, and `decide ID no` ends a live grant. `Console` now owns its
+  streams.
+- **A grant request names its secrets and gives a reason**:
+  `scotoma grant LIMITS NAMES REASON...`, `Scotoma::grant(limits, names, reason)`.
+- **A grant keeps the name it was asked under**; its uses are logged as that
+  name.
+- **Storing and removing a secret need a grant** over its name.
+- **Every request is logged**: `request`, then `grant`, `refuse` or
+  `abandon`, and `revoke`. A request whose caller hangs up no longer waits.
+
 - **Name placeholders replace UUID handles.** A model writes
   `[scotoma:NAME]`; `issue` (`scotoma issue`, `Scotoma::issue`) is gone. The
   usage log's fifth and sixth columns are now the grant id and a note.

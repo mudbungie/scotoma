@@ -53,13 +53,18 @@ fn a_password_must_be_typed_twice_alike_and_not_empty() {
 #[test]
 fn secrets_outlive_the_resident_process() {
     let unlocked = Unlocked::new("");
-    unlocked.client().set("pw", "hunter2").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
     unlocked.client().lock().unwrap();
     assert!(matches!(unlocked.client().names(), Err(Error::Locked)));
     let scratch = unlocked.into_scratch();
     let again = Unlocked::start(scratch, "pw\n", Path::new(SYSTEM));
     assert_eq!(again.client().redact("hunter2").unwrap(), "[scotoma:pw]");
-    assert!(again.console.text().starts_with("password: \nunlocked."));
+    assert!(
+        again
+            .console
+            .text()
+            .starts_with("password: \napprover token: ")
+    );
 }
 
 #[test]
@@ -82,6 +87,13 @@ fn founding_needs_a_writable_home_and_entropy() {
     let starved = scratch.path.join("no-entropy");
     let mut unlocked = Unlocked::start(scratch, "pw\npw\n", &starved);
     assert!(matches!(unlocked.stop().unwrap(), Err(Error::Io { .. })));
+
+    // An existing vault opens without entropy, but cannot mint its approver token.
+    let (scratch, founded) = attempt(Scratch::new(), "pw\npw\n");
+    founded.unwrap();
+    let starved = scratch.path.join("no-entropy");
+    let mut unlocked = Unlocked::start(scratch, "pw\n", &starved);
+    assert!(matches!(unlocked.stop().unwrap(), Err(Error::Io { .. })));
 }
 
 #[test]
@@ -99,90 +111,12 @@ fn one_resident_process_per_vault_and_a_dead_ones_socket_is_cleared() {
 }
 
 fn serve_once(home: &Path, typed: &str) -> Result<(), Error> {
-    let (mut input, mut output) = (typed.as_bytes(), Vec::new());
     let console = Console {
-        input: &mut input,
-        output: &mut output,
+        input: Box::new(std::io::Cursor::new(typed.to_owned())),
+        output: Box::new(Vec::new()),
         echo: |_| (),
     };
     unlock(home, console)
-}
-
-#[test]
-fn a_grant_is_minted_only_when_the_console_says_yes() {
-    let unlocked = Unlocked::new("y\nn\n");
-    let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
-    let token = client.grant("1h", &["pw"]).unwrap();
-    assert_eq!(token.len(), 36);
-    let asked = "grant requested by tester: pw for 1h\napprove? [y/N] ";
-    assert!(unlocked.console.text().ends_with(asked));
-    assert_eq!(unlocked.log().last().unwrap(), "grant pw");
-    assert!(
-        !fs::read_to_string(unlocked.scratch.path.join("audit.tsv"))
-            .unwrap()
-            .contains(&token)
-    );
-
-    let refused = client.grant("1h", &[]);
-    assert!(matches!(refused, Err(Error::Denied(why)) if why == "refused at the console"));
-    assert!(unlocked.console.text().contains("tester: * for 1h"));
-    // The console has nothing more to say: that is a no.
-    assert!(matches!(client.grant("1h", &["pw"]), Err(Error::Denied(_))));
-}
-
-#[test]
-fn a_grant_request_must_make_sense_before_anyone_is_asked() {
-    let unlocked = Unlocked::new("y\n");
-    let client = unlocked.client();
-    assert!(
-        matches!(client.grant("soon", &[]), Err(Error::Denied(why)) if why.contains("duration"))
-    );
-    assert!(matches!(
-        client.grant("1h", &["two words"]),
-        Err(Error::Name(_))
-    ));
-    assert!(!unlocked.console.text().contains("approve?"));
-}
-
-#[test]
-fn a_grant_expires_and_a_missing_one_is_refused() {
-    let unlocked = Unlocked::new("y\ny\n");
-    let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
-    assert!(
-        matches!(client.substitute("x"), Err(Error::Denied(why)) if why.starts_with("no grant"))
-    );
-    let spent = client.clone().with_grant(&client.grant("0s", &[]).unwrap());
-    assert!(matches!(spent.substitute("x"), Err(Error::Denied(why)) if why.contains("expired")));
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert!(matches!(
-        spent.run(&["true"], &mut out, &mut err),
-        Err(Error::Denied(_))
-    ));
-    let all = unlocked.granted(&[]);
-    assert_eq!(unlocked.log().last().unwrap(), "grant *");
-    assert_eq!(all.substitute("[scotoma:pw]").unwrap(), "hunter2");
-}
-
-#[test]
-fn minting_a_grant_needs_entropy_and_the_log() {
-    let scratch = Scratch::new();
-    let entropy = scratch.path.join("entropy");
-    fs::write(&entropy, [5; 72]).unwrap();
-    let unlocked = Unlocked::start(scratch, "pw\npw\ny\ny\n", &entropy);
-    fs::remove_file(&entropy).unwrap();
-    assert!(matches!(
-        unlocked.client().grant("1h", &[]),
-        Err(Error::Io { .. })
-    ));
-
-    let unlocked = Unlocked::new("y\n");
-    fs::create_dir(unlocked.scratch.path.join("audit.tsv")).unwrap();
-    assert!(matches!(
-        unlocked.client().grant("1h", &[]),
-        Err(Error::Io { .. })
-    ));
 }
 
 #[test]
@@ -211,7 +145,7 @@ fn a_request_that_is_not_one_is_refused() {
 fn a_caller_that_walks_away_mid_stream_harms_nothing() {
     let unlocked = Unlocked::new("");
     let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
+    unlocked.root().set("pw", "hunter2").unwrap();
     drop(client.redactor().unwrap());
     let mut stream = client.redactor().unwrap();
     assert_eq!(
@@ -221,65 +155,4 @@ fn a_caller_that_walks_away_mid_stream_harms_nothing() {
     drop(stream);
     assert_eq!(client.redact("hunter2").unwrap(), "[scotoma:pw]");
     unlocked.end().unwrap();
-}
-
-#[test]
-fn a_run_only_grant_runs_but_is_never_handed_the_value() {
-    let unlocked = Unlocked::new("y\n");
-    let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
-    let token = client.grant("1h,run", &["pw"]).unwrap();
-    let runner = client.with_grant(&token);
-    assert!(unlocked.console.text().contains("pw for 1h, run only"));
-    let handle = "[scotoma:pw]".to_owned();
-    assert!(
-        matches!(runner.substitute(&handle), Err(Error::Denied(why)) if why.contains("only runs"))
-    );
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let script = "test \"$1\" = hunter2 && echo \"$1\"";
-    let ran = runner.run(&["sh", "-c", script, "sh", &handle], &mut out, &mut err);
-    assert_eq!(ran.unwrap(), 0);
-    assert_eq!(String::from_utf8(out).unwrap(), format!("{handle}\n"));
-}
-
-#[test]
-fn a_grant_minted_from_a_grant_asks_nobody_and_is_bound_by_both() {
-    let unlocked = Unlocked::new("y\n");
-    let client = unlocked.client();
-    client.set("pw", "hunter2").unwrap();
-    client.set("other", "swordfish").unwrap();
-    let parent = unlocked.granted(&["pw"]);
-    let child = parent.clone();
-    let child = child.with_grant(&parent.grant("1x,run", &[]).unwrap());
-    assert_eq!(unlocked.console.text().matches("approve?").count(), 1);
-    // The log names the parent in its note.
-    let log = fs::read_to_string(unlocked.scratch.path.join("audit.tsv")).unwrap();
-    let grants: Vec<Vec<&str>> = log
-        .lines()
-        .map(|line| line.split('\t').collect())
-        .filter(|fields: &Vec<&str>| fields[2] == "grant")
-        .collect();
-    assert_eq!((grants[0][3], grants[0][5]), ("pw", "-"));
-    assert_eq!((grants[1][3], grants[1][5]), ("*", grants[0][4]));
-
-    // Wider on paper, no wider in fact.
-    assert!(matches!(
-        child.run(
-            &["echo", "[scotoma:other]"],
-            &mut Vec::new(),
-            &mut Vec::new()
-        ),
-        Err(Error::Denied(_))
-    ));
-    let handle = "[scotoma:pw]".to_owned();
-    assert!(matches!(child.substitute(&handle), Err(Error::Denied(_))));
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert!(matches!(
-        child.run(&["echo", &handle], &mut out, &mut err),
-        Ok(0)
-    ));
-    // Its one use is spent; the parent's are not.
-    assert!(matches!(child.substitute("x"), Err(Error::Denied(why)) if why.contains("used up")));
-    assert!(matches!(child.grant("1h", &[]), Err(Error::Denied(_))));
-    assert_eq!(parent.substitute(&handle).unwrap(), "hunter2");
 }

@@ -32,6 +32,14 @@ pub(crate) struct Act<'a> {
 }
 
 impl Audit {
+    /// The same log, written as `actor`.
+    pub fn by(&self, actor: &str) -> Self {
+        Self {
+            path: self.path.clone(),
+            actor: actor.to_owned(),
+        }
+    }
+
     pub fn record(&self, act: Act) -> Result<(), Error> {
         let Act {
             event,

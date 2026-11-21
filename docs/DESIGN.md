@@ -54,16 +54,39 @@ is a client over a Unix socket in the vault directory, including the library:
 the socket's name before it answers, so a caller that hears "locked" is
 right.
 
-**Authorization is asked where the agent cannot type.** A grant is minted
-only by a `y` on the resident process's own console: the terminal the user
-unlocked in. That is an authorization step with no second password, and no
-client call can answer it. The console is one seat today; a remote approver
-(a GUI, a parent agent) is another reader of the same question later.
+**One seat decides, and policy sits in it, not here.** A grant request waits
+at the desk (`src/desk.rs`) until an approver answers. The approver is
+whoever holds the approver token, shown once on the console at unlock: the
+person typing `y` there, a GUI, or a program that approves by rule. Scotoma
+has no rules of its own; automatic approval is an approver that says yes,
+and the log names it. A console that is closed is not a refusal, so a
+headless resident process is served by its approvers.
+
+**The approver token is a grant.** It is the root: over every secret, without
+limits. Every other grant descends from it, so "who authorized this" is
+always a grant, and there is one check. Storing and removing a secret need a
+grant over its name like any other act.
 
 **One grant record; the models are its limits.** A grant is
-`{id, names, expires, uses left, run only, parent}` held in memory, asked for
-as comma-joined limits (`1h`, `3x`, `run`). An absent limit is the largest
-number, so there is no "unlimited" case.
+`{id, actor, names, expires, uses left, run only, parent}` held in memory,
+asked for as comma-joined limits (`1h`, `3x`, `run`). An absent limit is the
+largest number, so there is no "unlimited" case.
+
+**A request says why.** The reason is shown to whoever decides and written to
+the log with the limits. Control characters are removed before either.
+
+**A grant fixes who its holder is.** The name a grant was asked under is the
+name its uses are logged as, whatever the caller claims later. A grant minted
+from a grant is named by the parent that asked. Without a grant, a name is a
+claim.
+
+**A request ends one of four ways, each logged:** granted, refused,
+abandoned (the caller hung up, or the vault locked), or the log could not be
+written, which is a refusal. Nothing waits forever on a caller that left.
+
+**A no to a live grant ends it.** `decide ID no` answers an open request or
+revokes a grant; a revoked grant has no uses left, and since every question
+is asked up the chain, neither has anything minted from it.
 
 **A use is a flow that substituted a value.** One command or one stream,
 however many placeholders it held; a flow that matched nothing or was refused
@@ -77,9 +100,9 @@ wider" when minted: it simply cannot do what its parent cannot, and it dies
 when its parent expires or is spent. A child's use is charged to every
 ancestor.
 
-**The token presented is who authorizes.** A grant request with no token is
-answered by the console; with a token, by that grant, and nobody is asked.
-One request, no second verb. To ask the user for more, ask without a token.
+**The token presented is who authorizes.** A grant request with no token
+waits for an approver; with a token, it is answered by that grant at once.
+One request, no second verb. To ask for more, ask without a token.
 
 **A grant has a public id and a private token.** The log and the console
 show the id; only the holder knows the token.
@@ -137,17 +160,14 @@ public API, which is the test that the API is sufficient.
   reversal, or printing a value one character at a time all pass. Scotoma
   stops accidents and casual exposure, not a model that is trying.
 - **A hostile process running as the user.** The files are ciphertext to it, and
-  the socket releases no value without a grant. It can store, replace, remove
-  and list secrets (those need no grant), attach a debugger to the resident
-  process, or lift a grant token from the environment of a process that holds
-  one. Closing that needs the resident process under another user, or
+  the socket does nothing with a secret without a grant. It can attach a
+  debugger to the resident process, or lift a token, the approver's included,
+  from the environment or terminal of a process that holds one. Closing that needs the resident process under another user, or
   hardening that needs `unsafe`.
 - **The wider door.** A holder of a grant can call `substitute` and read the
   value, unless the grant is `run` only. Even then the command it runs holds
   the value and can write it to a file or print it encoded: `run` only stops
   asking, not trying.
-- **Revoking one grant.** A grant ends at its limits or at `lock`; there is
-  no way to end one early.
 - **Process arguments.** A substituted argument is visible in the process
   table while the command runs.
 - **Memory.** Keys and values are ordinary buffers; they are not zeroed.
@@ -159,8 +179,10 @@ public API, which is the test that the API is sufficient.
 
 The contract, for any agent loop:
 
-1. **The user unlocks** the vault and, when the harness asks, approves a
-   grant. The harness keeps the token (`Scotoma::with_grant`).
+1. **The user unlocks** the vault. The harness asks for a grant per agent,
+   under that agent's name and with its reason, and keeps the token
+   (`Scotoma::with_grant`). Whatever shows the user a prompt holds the
+   approver token and loops on `Scotoma::pending` / `decide`.
 2. **Tell the model the names** (`Scotoma::names`) and the form
    `[scotoma:NAME]`. It writes that into a tool call, for example a shell
    command.

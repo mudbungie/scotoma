@@ -48,16 +48,22 @@ fn a_secret_reaches_the_command_and_never_the_reader() {
         .write_all(b"pw\npw\ny\n")
         .unwrap();
     let mut terminal = BufReader::new(resident.stderr.take().unwrap()).lines();
-    let ready = terminal.find(|line| line.as_ref().unwrap().contains("unlocked"));
-    assert!(ready.is_some());
+    let shown: Vec<String> = terminal
+        .by_ref()
+        .map(Result::unwrap)
+        .take_while(|line| !line.contains("unlocked"))
+        .collect();
+    let approver = shown.last().unwrap().strip_prefix("approver token: ");
+    let approver = approver.unwrap();
 
+    assert_eq!(run("", &["set", "pw"], "hunter2\n").0, Some(1));
     assert_eq!(
-        run("", &["set", "pw"], "hunter2\n"),
+        run(approver, &["set", "pw"], "hunter2\n"),
         (Some(0), String::new())
     );
     let handle = "[scotoma:pw]";
     assert_eq!(run("", &["run", "echo", handle], "").0, Some(1));
-    let grant = run("", &["grant", "15m", "pw"], "").1;
+    let grant = run("", &["grant", "15m", "pw", "to", "log", "in"], "").1;
 
     let script = "test \"$1\" = hunter2 && echo \"the password is $1\"";
     let ran = run(&grant, &["run", "sh", "-c", script, "sh", handle], "");
@@ -69,12 +75,21 @@ fn a_secret_reaches_the_command_and_never_the_reader() {
         .lines()
         .map(|line| line.split('\t').nth(2).unwrap())
         .collect();
-    assert_eq!(events, ["set", "grant", "use", "redact", "leak"]);
+    assert_eq!(events, ["set", "request", "grant", "use", "redact", "leak"]);
+    let actors: Vec<&str> = log
+        .lines()
+        .map(|line| line.split('\t').nth(1).unwrap())
+        .collect();
+    assert_eq!(actors[2], "console");
     assert!(
-        log.lines()
-            .all(|line| line.split('\t').nth(1) == Some("end-to-end"))
+        actors
+            .iter()
+            .filter(|&&actor| actor == "end-to-end")
+            .count()
+            == 5
     );
-    assert!(!log.contains("hunter2") && !log.contains(&grant));
+    assert!(log.contains("15m to log in"));
+    assert!(!log.contains("hunter2") && !log.contains(&grant) && !log.contains(approver));
 
     assert_eq!(run("", &["lock"], "").0, Some(0));
     assert_eq!(resident.wait().unwrap().code(), Some(0));
