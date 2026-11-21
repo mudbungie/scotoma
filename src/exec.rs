@@ -1,14 +1,19 @@
 //! Running a command inside the resident process: the secret goes into the
-//! child's arguments and nowhere else, and never crosses the socket.
+//! child's arguments and nowhere else, and never crosses the socket. The
+//! caller's input is the command's input, and a caller that goes away takes
+//! the command with it.
 
 use crate::grant::Grant;
 use crate::vault::{Flow, Vault};
 use crate::{Error, wire};
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
-use std::process::{Command, Stdio};
+use std::os::unix::process::CommandExt;
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
 
@@ -45,29 +50,67 @@ pub(crate) fn run(
         .env_clear()
         .envs(vars)
         .current_dir(OsStr::from_bytes(place.cwd))
-        .stdin(Stdio::null())
+        // Its own group, so that it can be stopped with everything it started.
+        .process_group(0)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(Error::io(name))?;
-    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     let (mut out_flow, mut err_flow) = (flow.clone(), flow);
     let (mut relayed_out, mut relayed_err) = (Ok(()), Ok(()));
-    let line = Mutex::new(conn);
+    let (line, group, over) = (Mutex::new(conn), child.id(), AtomicBool::new(false));
+    let mut status = Ok(None);
     thread::scope(|scope| {
-        scope.spawn(|| {
-            relayed_err =
-                stderr.map_or(Ok(()), |pipe| relay(pipe, &mut err_flow, wire::ERR, &line));
+        scope.spawn(|| feed(conn, stdin, group, &over));
+        thread::scope(|relays| {
+            relays.spawn(|| {
+                relayed_err =
+                    stderr.map_or(Ok(()), |pipe| relay(pipe, &mut err_flow, wire::ERR, &line));
+            });
+            relayed_out =
+                stdout.map_or(Ok(()), |pipe| relay(pipe, &mut out_flow, wire::OUT, &line));
         });
-        relayed_out = stdout.map_or(Ok(()), |pipe| relay(pipe, &mut out_flow, wire::OUT, &line));
+        status = child.wait().map(Some).map_err(Error::io(name));
+        // The command is over: nothing is left to stop, and the caller has
+        // nothing more to say that anyone will read.
+        over.store(true, Ordering::SeqCst);
+        let _ = conn.shutdown(Shutdown::Read);
     });
-    let status = child.wait().map_err(Error::io(name));
-    let code =
-        |status: std::process::ExitStatus| status.code().and_then(|code| u8::try_from(code).ok());
+    let code = |status: std::process::ExitStatus| status.code();
+    let byte = |status: Option<_>| {
+        status
+            .and_then(code)
+            .and_then(|code| u8::try_from(code).ok())
+    };
     relayed_out
         .and(relayed_err)
         .and(status)
-        .map(|status| vec![code(status).unwrap_or(1)])
+        .map(|status| vec![byte(status).unwrap_or(1)])
+}
+
+/// The caller's side of the conversation while the command runs: its input
+/// is the command's, the end of its input is the end of the command's, and
+/// if it goes away the command and everything it started are killed.
+fn feed(conn: &UnixStream, mut stdin: Option<ChildStdin>, group: u32, over: &AtomicBool) {
+    loop {
+        match wire::recv(conn) {
+            Ok((wire::IN, bytes)) => {
+                let _ = stdin.as_mut().map(|pipe| pipe.write_all(&bytes));
+            }
+            Ok(_) => stdin = None,
+            Err(_) => {
+                if !over.load(Ordering::SeqCst) {
+                    // The process group, by its negative id: no dependency
+                    // and no `unsafe` reaches killpg otherwise.
+                    let group = format!("-{group}");
+                    let _ = Command::new("kill").args(["-KILL", &group]).status();
+                }
+                return;
+            }
+        }
+    }
 }
 
 /// Copy one of the child's pipes to the caller, redacted. Returning early

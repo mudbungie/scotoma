@@ -64,7 +64,9 @@ pub struct Streams<'a> {
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// Run one command line; the return value is the process exit code.
-/// `console` is the terminal `unlock` owns while the vault is unlocked.
+/// `console` is the process's own input and terminal, owned: what `unlock`
+/// holds for as long as the vault is unlocked, and what `run` feeds to its
+/// command.
 pub fn run(args: &[String], env: Env, console: Console, mut streams: Streams) -> u8 {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match dispatch(&args, env, console, &mut streams) {
@@ -135,7 +137,9 @@ fn dispatch(
         ["redact"] => pump(streams.input, &mut vault.redactor()?, streams.out)?,
         ["guard"] => pump(streams.input, &mut vault.guard()?, streams.out)?,
         ["run", command @ ..] if !command.is_empty() => {
-            return vault.run(command, streams.out, streams.err).map(Some);
+            return vault
+                .run(command, console.input, streams.out, streams.err)
+                .map(Some);
         }
         _ => return Ok(None),
     }

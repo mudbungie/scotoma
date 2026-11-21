@@ -150,6 +150,11 @@ fn a_grant_is_asked_for_and_lets_a_secret_be_used_but_not_seen() {
             err: "oops\n".into()
         }
     );
+    // What is piped to `run` is the command's input.
+    assert_eq!(
+        home.run(&["run", "cat"], b"typed hunter2").out,
+        "typed [scotoma:pw]"
+    );
 }
 
 #[test]
@@ -199,13 +204,13 @@ fn broken_streams_are_failures() {
         &["run", "echo", "hi"],
     ];
     for args in cases {
-        let (code, err) = drive(&env, args, &mut &b"text"[..], &mut Broken);
+        let (code, err) = drive(&env, args, b"", &mut &b"text"[..], &mut Broken);
         assert!(
             code == 1 && err.starts_with("scotoma: \"output\""),
             "{args:?}: {err}"
         );
     }
-    let (code, err) = drive(&env, &["redact"], &mut Broken, &mut Vec::new());
+    let (code, err) = drive(&env, &["redact"], b"", &mut Broken, &mut Vec::new());
     assert!(code == 1 && err.starts_with("scotoma: \"input\""), "{err}");
 }
 
@@ -221,7 +226,7 @@ fn an_approver_sees_what_is_asked_and_decides() {
     let waiting = home.run(&["pending"], b"").out;
     let fields: Vec<&str> = waiting.trim_end().split('\t').collect();
     assert_eq!(fields[1..], ["agent-7", "pw,db", "15m,run", "to deploy"]);
-    let (code, err) = drive(&home.env(), &["pending"], &mut &b""[..], &mut Broken);
+    let (code, err) = drive(&home.env(), &["pending"], b"", &mut &b""[..], &mut Broken);
     assert!(code == 1 && err.starts_with("scotoma: \"output\""));
     assert_eq!(home.run(&["decide", fields[0], "yes"], b"").code, 0);
     assert_eq!(asker.join().unwrap().out.len(), 37);

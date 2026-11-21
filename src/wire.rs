@@ -14,6 +14,8 @@ pub(crate) const OK: u8 = b'.';
 /// The end of an input stream.
 pub(crate) const END: u8 = b'$';
 /// A chunk of a running command's stdout / stderr.
+/// A piece of the caller's input, for a command.
+pub(crate) const IN: u8 = b'0';
 pub(crate) const OUT: u8 = b'1';
 pub(crate) const ERR: u8 = b'2';
 

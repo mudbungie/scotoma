@@ -20,7 +20,7 @@
 //! // the value never comes here.
 //! let (mut out, mut err) = (Vec::new(), Vec::new());
 //! let command = ["curl", "-u", "admin:[scotoma:api-password]", "https://example.com"];
-//! vault.run(&command, &mut out, &mut err)?;
+//! vault.run(&command, Box::new(std::io::empty()), &mut out, &mut err)?;
 //!
 //! // Last gate before the model: a secret in the request is an error.
 //! vault.check("the request body")?;

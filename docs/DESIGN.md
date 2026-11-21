@@ -110,6 +110,11 @@ show the id; only the holder knows the token.
 **Detection needs no grant.** Redaction and the guard reveal only whether a
 string is a secret, and must keep working when every grant has expired.
 
+**The caller's connection is the command's lifeline.** In `run`, the caller's
+input is relayed to the command, and the command's group is killed when the
+connection closes. There is no timeout and no cancel request: whoever wants a
+limit stops waiting, which is the one signal a crashed caller also gives.
+
 **Both ways to execute.** `run`: the resident process spawns the command in
 the caller's directory and environment, so the value never crosses the
 socket. `substitute`: the caller gets the text and executes it, for a harness
@@ -175,7 +180,9 @@ public API, which is the test that the API is sufficient.
 - **Process arguments.** A substituted argument is visible in the process
   table while the command runs.
 - **Memory.** Keys and values are ordinary buffers; they are not zeroed.
-- **A dead caller's command** is stopped only when it next writes output.
+- **A command that will not read.** If a command leaves a full pipe of
+  input unread, the resident process's reader waits on it and does not
+  notice the caller leave until the command reads or ends.
 - **Log growth.** Nothing rotates the log.
 - **No password change, no recovery.**
 

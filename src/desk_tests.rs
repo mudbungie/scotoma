@@ -18,6 +18,13 @@ fn asking(unlocked: &Unlocked, actor: &str) -> JoinHandle<Result<String, Error>>
     thread::spawn(move || client.grant("1h", &["pw"], "to deploy"))
 }
 
+/// Run a command with no input; its exit code and what it printed.
+fn runs(client: &Scotoma, command: &[&str]) -> Result<(u8, String), Error> {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = client.run(command, crate::testing::none(), &mut out, &mut err)?;
+    Ok((code, String::from_utf8(out).unwrap()))
+}
+
 fn denied(result: Result<impl Sized, Error>, why: &str) -> bool {
     matches!(result, Err(Error::Denied(said)) if said.contains(why))
 }
@@ -84,10 +91,7 @@ fn nothing_is_stored_used_or_removed_without_a_live_grant_over_it() {
     let token = unlocked.root().grant("0s", &["pw"], "too late").unwrap();
     let spent = client.with_grant(&token);
     assert!(denied(spent.substitute("x"), "expired"));
-    assert!(denied(
-        spent.run(&["true"], &mut Vec::new(), &mut Vec::new()),
-        "expired"
-    ));
+    assert!(denied(runs(&spent, &["true"]), "expired"));
     assert!(denied(spent.grant("1h", &["pw"], "more"), "expired"));
 }
 
@@ -213,15 +217,9 @@ fn a_run_only_grant_runs_but_is_never_handed_the_value() {
     let token = root.grant("1h,run", &["pw"], "testing").unwrap();
     let runner = unlocked.client().with_grant(&token);
     assert!(denied(runner.substitute("[scotoma:pw]"), "only runs"));
-    let (mut out, mut err) = (Vec::new(), Vec::new());
     let script = "test \"$1\" = hunter2 && echo \"$1\"";
-    let ran = runner.run(
-        &["sh", "-c", script, "sh", "[scotoma:pw]"],
-        &mut out,
-        &mut err,
-    );
-    assert!(matches!(ran, Ok(0)));
-    assert_eq!(String::from_utf8(out).unwrap(), "[scotoma:pw]\n");
+    let ran = runs(&runner, &["sh", "-c", script, "sh", "[scotoma:pw]"]);
+    assert_eq!(ran.unwrap(), (0, "[scotoma:pw]\n".to_owned()));
 }
 
 #[test]
@@ -243,15 +241,11 @@ fn a_grant_minted_from_a_grant_asks_nobody_and_is_bound_by_both() {
     assert!(log[log.len() - 1].ends_with(&format!(" from {parent_id}")));
 
     // Wider on paper, no wider in fact; and a refusal costs no use.
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert!(denied(
-        child.run(&["echo", "[scotoma:other]"], &mut out, &mut err),
-        "cover"
-    ));
+    assert!(denied(runs(&child, &["echo", "[scotoma:other]"]), "cover"));
     assert!(denied(child.substitute("[scotoma:pw]"), "only runs"));
     assert!(matches!(
-        child.run(&["echo", "[scotoma:pw]"], &mut out, &mut err),
-        Ok(0)
+        runs(&child, &["echo", "[scotoma:pw]"]),
+        Ok((0, _))
     ));
     // Its one use is spent; the parent's are not.
     assert!(denied(child.substitute("x"), "used up"));

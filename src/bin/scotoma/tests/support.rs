@@ -67,10 +67,12 @@ impl Write for Shared {
     }
 }
 
-/// One run with the caller's streams: the exit code and stderr.
+/// One run with the caller's streams: the exit code and stderr. `typed` is
+/// what the process's own input holds, for the commands that own it.
 pub(super) fn drive(
     env: &[(&str, &str)],
     args: &[&str],
+    typed: &[u8],
     input: &mut (dyn BufRead + Send),
     out: &mut (dyn Write + Send),
 ) -> (u8, String) {
@@ -82,7 +84,7 @@ pub(super) fn drive(
     };
     let mut err = Vec::new();
     let nobody = Console {
-        input: Box::new(io::empty()),
+        input: Box::new(Cursor::new(typed.to_vec())),
         output: Box::new(io::sink()),
         echo: |_| (),
     };
@@ -101,7 +103,7 @@ pub(super) fn drive(
 
 pub(super) fn run_with(env: &[(&str, &str)], args: &[&str], mut input: &[u8]) -> Outcome {
     let mut out = Vec::new();
-    let (code, err) = drive(env, args, &mut input, &mut out);
+    let (code, err) = drive(env, args, input, &mut input, &mut out);
     Outcome {
         code,
         out: String::from_utf8(out).unwrap(),

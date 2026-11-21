@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **`run` relays input and can be stopped.** `scotoma run` passes its stdin
+  to the command; `Scotoma::run` takes the input as a new second argument.
+  When the caller goes away, the command and everything it started are
+  killed.
+- The gate now compiles the documentation's examples (`make doc`).
+
 - **Detection knows encodings.** Redaction and the guard also catch a value
   percent-encoded and base64-encoded, including inside a longer base64 run
   such as a Basic-auth header.

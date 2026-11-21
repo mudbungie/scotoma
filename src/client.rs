@@ -4,10 +4,11 @@
 //! conversation over the vault's socket.
 
 use crate::{Error, Request, store, wire};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::thread;
 
 /// A connection to an unlocked vault.
 ///
@@ -180,9 +181,16 @@ impl Scotoma {
     /// secret. The value never reaches the caller: output arrives already
     /// redacted, the value reading as `[scotoma:NAME]` again.
     /// Returns the command's exit code (1 if it had none). Needs a grant.
+    ///
+    /// `input` is the command's standard input, read on a thread of its own
+    /// until it ends; pass `Box::new(std::io::empty())` for none. To stop a
+    /// command, stop waiting for it: when this connection closes (the
+    /// calling process exits, or `out`/`err` fail), the resident process
+    /// kills the command and everything it started.
     pub fn run(
         &self,
         command: &[&str],
+        mut input: Box<dyn Read + Send>,
         out: &mut dyn Write,
         err: &mut dyn Write,
     ) -> Result<u8, Error> {
@@ -193,7 +201,28 @@ impl Scotoma {
         let env = wire::pack(&vars.iter().map(Vec::as_slice).collect::<Vec<_>>());
         let mut args = vec![cwd.as_os_str().as_bytes(), &env];
         args.extend(command.iter().map(|word| word.as_bytes()));
-        let conn = self.begin("run", &args)?;
+        let twin = |conn: UnixStream| {
+            let twin = conn.try_clone().map_err(Error::io("resident"));
+            twin.map(|twin| (conn, twin))
+        };
+        let (conn, feed) = self.begin("run", &args).and_then(twin)?;
+        // Detached: a command that ends first must not wait for input that
+        // never comes.
+        thread::spawn(move || {
+            let mut buffer = vec![0; 1 << 16];
+            loop {
+                let read = input.read(&mut buffer).unwrap_or(0);
+                let chunk = buffer.get(..read).unwrap_or_default();
+                let tag = if chunk.is_empty() {
+                    wire::END
+                } else {
+                    wire::IN
+                };
+                if wire::send(&feed, tag, chunk).is_err() || chunk.is_empty() {
+                    return;
+                }
+            }
+        });
         loop {
             let (tag, body) = wire::recv(&conn).map_err(Error::io("resident"))?;
             match tag {

@@ -21,7 +21,7 @@ impl Write for Broken {
 /// Run a command through `client`; returns `(code, stdout, stderr)`.
 fn run(client: &Scotoma, command: &[&str]) -> Result<(u8, String, String), Error> {
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = client.run(command, &mut out, &mut err)?;
+    let code = client.run(command, crate::testing::none(), &mut out, &mut err)?;
     let text = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap();
     Ok((code, text(out), text(err)))
 }
@@ -185,9 +185,14 @@ fn a_caller_that_stops_listening_stops_the_command() {
     let args: [&[u8]; 3] = [cwd.as_os_str().as_bytes(), b"", b"yes"];
     drop(client.begin("run", &args).unwrap());
     let (mut out, mut err) = (Broken, Vec::new());
-    let deaf = client.run(&["echo", "hi"], &mut out, &mut err);
+    let deaf = client.run(&["echo", "hi"], crate::testing::none(), &mut out, &mut err);
     assert!(matches!(deaf, Err(Error::Io { context, .. }) if context == "\"output\""));
-    let deaf = client.run(&["sh", "-c", "echo hi >&2"], &mut err, &mut out);
+    let deaf = client.run(
+        &["sh", "-c", "echo hi >&2"],
+        crate::testing::none(),
+        &mut err,
+        &mut out,
+    );
     assert!(matches!(deaf, Err(Error::Io { .. })));
     // The resident process only ends once `yes` has: this returning is the test.
     unlocked.end().unwrap();
@@ -213,4 +218,58 @@ fn a_vault_that_cannot_be_read_fails_every_operation() {
     assert!(matches!(client.redact("x"), Err(Error::Io { .. })));
     assert!(matches!(client.check("x"), Err(Error::Io { .. })));
     assert!(matches!(run(&client, &["true"]), Err(Error::Io { .. })));
+}
+
+#[test]
+fn the_callers_input_is_the_commands_input() {
+    let unlocked = Unlocked::new("");
+    let client = unlocked.granted(&[]);
+    client.set("pw", "hunter2").unwrap();
+    let typed = std::io::Cursor::new(b"it is hunter2\n".to_vec());
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = client.run(&["cat"], Box::new(typed), &mut out, &mut err);
+    assert!(matches!(code, Ok(0)));
+    assert_eq!(out, b"it is [scotoma:pw]\n");
+    // Input nobody reads harms nothing.
+    let ignored = std::io::Cursor::new(vec![b'x'; 1 << 17]);
+    let code = client.run(&["true"], Box::new(ignored), &mut out, &mut err);
+    assert!(matches!(code, Ok(0)));
+}
+
+#[test]
+fn a_caller_that_goes_away_takes_the_command_and_its_children_with_it() {
+    let unlocked = Unlocked::new("");
+    let client = unlocked.granted(&[]);
+    let mark = unlocked.scratch.path.join("pids");
+    let script = format!("sleep 60 & echo $$ $! > {}; wait", mark.display());
+    let cwd = std::env::current_dir().unwrap();
+    let path = wire::pack(&[b"PATH=/usr/bin:/bin"]);
+    let args: [&[u8]; 5] = [
+        cwd.as_os_str().as_bytes(),
+        &path,
+        b"sh",
+        b"-c",
+        script.as_bytes(),
+    ];
+    let conn = client.begin("run", &args).unwrap();
+    let alive = |pid: &str| {
+        let probe = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .output();
+        probe.unwrap().status.success()
+    };
+    let pids = loop {
+        let written = std::fs::read_to_string(&mark).unwrap_or_default();
+        if written.ends_with('\n') {
+            break written;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    let pids: Vec<&str> = pids.split_whitespace().collect();
+    assert!(pids.len() == 2 && pids.iter().all(|pid| alive(pid)));
+    drop(conn);
+    while pids.iter().any(|pid| alive(pid)) {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(matches!(run(&client, &["true"]), Ok((0, _, _))));
 }

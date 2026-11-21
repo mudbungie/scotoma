@@ -120,7 +120,7 @@ let token = vault.grant("1h,run", &["api-password"], "log in to staging")?;  // 
 let vault = vault.with_grant(&token);
 
 let command = ["curl", "-u", "admin:[scotoma:api-password]", url];  // as the model wrote it
-let code = vault.run(&command, &mut out, &mut err)?;            // the value never comes here
+let code = vault.run(&command, input, &mut out, &mut err)?;     // the value never comes here
 let shown = vault.redact(&tool_output)?;                        // safe to show a model
 vault.check(&request_body)?;                                    // Err(Leak) means: do not send
 ```
@@ -129,7 +129,10 @@ vault.check(&request_body)?;                                    // Err(Leak) mea
 transcript stays clean; check what is about to be sent to the model, so a
 secret that got past everything else stops the request instead of leaving.
 
-`run` keeps the value inside the resident process. When the harness must
+`run` keeps the value inside the resident process. `input` is the command's
+standard input. To stop a command, stop waiting for it: when the calling
+process exits or the connection closes, the resident process kills the
+command and everything it started. When the harness must
 execute the command itself, `substitute` returns the text with values in
 place: that text carries secrets and must go only to the thing that executes.
 

@@ -58,6 +58,11 @@ impl Write for Shared {
     }
 }
 
+/// No input, for a command that reads none.
+pub(crate) fn none() -> Box<dyn io::Read + Send> {
+    Box::new(io::empty())
+}
+
 /// A resident process on a thread, locked again when dropped.
 pub(crate) struct Unlocked {
     pub scratch: Scratch,
