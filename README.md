@@ -175,17 +175,20 @@ is the resident process itself, for a harness that wants to host it.
   current value; whether it fills in is the grant's decision alone. The same
   text is what redaction writes, so a model reads back what it wrote. A
   placeholder for a secret that does not exist is left as it is.
-- **Matching is exact**, leftmost-longest. Redaction and the guard also match
-  a value as it reads inside a JSON string, so a serialized request body can
-  be checked.
+- **Matching is exact byte strings**, leftmost-longest, in one pass.
+  Redaction and the guard look for each value as stored and as it reads
+  inside a JSON string, percent-encoded (a URL, a form body), and base64
+  wherever it falls inside a longer encoded run (a Basic-auth header). The
+  base64 forms need a value of seven bytes or more.
 - **A use is authorized and logged before its bytes are released.** If the
   log cannot be written, nothing is substituted and no output is passed on.
 
 ## What it does not do
 
-- **Exact matches only.** A value that comes back transformed is not caught:
-  base64 (`curl -v` prints a Basic-auth header that way), hex, URL-encoding,
-  or one character per line.
+- **Known forms only.** A value that comes back transformed some other way
+  is not caught: hex, a second layer of encoding, reversed, split across
+  lines, or a part of it. A base64 match leaves the one or two characters
+  the value shares with its neighbours.
 - **A `run`-only grant is not a wall.** It refuses to hand over the value,
   but the command it runs holds the value and can write it to a file or
   print it encoded. It stops an agent from reading a secret by asking, not
@@ -205,7 +208,7 @@ is the resident process itself, for a harness that wants to host it.
 
 ```console
 $ make install-hooks    # one-time: seat .githooks/* in .git/hooks
-$ make check            # the complete gate: size, leak-scan, fmt-check, lint, deny, cov
+$ make check            # the complete gate: size, leak-scan, fmt-check, lint, deny, cov, doc
 $ make test
 $ make package          # build the .crate and leak-scan what it contains
 ```

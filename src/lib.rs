@@ -12,8 +12,9 @@
 //! // Somewhere, the user has run `scotoma unlock` on this directory.
 //! let vault = scotoma::Scotoma::open("/home/u/.local/share/scotoma", "my-harness")?;
 //!
-//! // The user approves this at the resident process's console.
-//! let vault = vault.clone().with_grant(&vault.grant("1h", &["api-password"])?);
+//! // An approver decides: the person at the unlock terminal, or a program.
+//! let token = vault.grant("1h,run", &["api-password"], "log in to staging")?;
+//! let vault = vault.with_grant(&token);
 //!
 //! // The model wrote the placeholder. The resident process runs the command;
 //! // the value never comes here.
@@ -27,8 +28,8 @@
 //! # }
 //! ```
 //!
-//! Detection is exact string matching. See the README for what that does
-//! and does not protect against.
+//! Detection looks for each value as stored and in a few fixed encodings.
+//! See the README for what that does and does not protect against.
 
 mod admit;
 mod audit;
@@ -37,6 +38,7 @@ mod crypt;
 mod desk;
 mod error;
 mod exec;
+mod forms;
 mod grant;
 mod resident;
 mod store;

@@ -1,4 +1,4 @@
-.PHONY: setup build test fmt fmt-check lint deny cov cov-text size leak-scan package check install-hooks clean
+.PHONY: setup build test fmt fmt-check lint deny cov cov-text size leak-scan package check install-hooks clean doc
 
 # Dev tooling the gate needs beyond the pinned toolchain.
 setup:
@@ -33,6 +33,10 @@ advisories:
 cov:
 	cargo llvm-cov --fail-under-lines 100 --fail-under-regions 100
 
+# The examples in the documentation compile: `cov` does not build them.
+doc:
+	cargo test --doc
+
 # Where the gap is: the annotated source, uncovered regions marked `^0`.
 # `bl-remote-run cov-text` brings it home to .remote/cov-text/.
 DIST ?= target/dist
@@ -59,7 +63,7 @@ package:
 
 # The complete gate, cheap first. The pre-commit hook and CI both run exactly
 # this; nothing restates a step.
-check: size leak-scan fmt-check lint deny cov
+check: size leak-scan fmt-check lint deny cov doc
 
 # Seat .githooks/* as symlinks in the repo's own hooks directory. NOT
 # `core.hooksPath`: a machine may set that globally to a chain hook that execs

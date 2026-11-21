@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Detection knows encodings.** Redaction and the guard also catch a value
+  percent-encoded and base64-encoded, including inside a longer base64 run
+  such as a Basic-auth header.
+
 - **The approver seat.** `unlock` prints an approver token: a grant over
   everything. Its holder answers grant requests (`scotoma pending`,
   `scotoma decide ID yes|no`; `Scotoma::pending`, `Scotoma::decide`) alongside

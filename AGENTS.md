@@ -23,7 +23,7 @@ Tasks are tracked with `bl` (`bl --skill`). `bl claim` prints a worktree; all ed
 
 ## The gate
 
-`make check` is the complete gate: `size → leak-scan → fmt-check → lint → deny → cov`. `.githooks/pre-commit` refuses direct commits to `main` and then `exec`s `bl-gate` (machine tooling), which obtains a verdict for the staged tree from the build machine rather than compiling here. `.github/workflows/ci.yml` runs the same `make check`; nothing restates a step the Makefile defines. Advisories are deliberately outside the per-commit gate (`make advisories`). Run `make install-hooks` once per clone.
+`make check` is the complete gate: `size → leak-scan → fmt-check → lint → deny → cov → doc`. `.githooks/pre-commit` refuses direct commits to `main` and then `exec`s `bl-gate` (machine tooling), which obtains a verdict for the staged tree from the build machine rather than compiling here. `.github/workflows/ci.yml` runs the same `make check`; nothing restates a step the Makefile defines. Advisories are deliberately outside the per-commit gate (`make advisories`). Run `make install-hooks` once per clone.
 
 Every gate step sweeps `git ls-files`: `git add -A` before running one locally, or new files are invisible to it.
 

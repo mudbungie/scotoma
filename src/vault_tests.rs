@@ -112,6 +112,12 @@ fn redaction_names_the_secret_and_the_guard_refuses_it() {
         pass(vault.redactor().unwrap(), "got hunter2!").unwrap(),
         "got [scotoma:pw]!"
     );
+    // As curl -v shows a Basic-auth header, and as a URL carries it.
+    let seen = "Authorization: Basic YWRtaW46aHVudGVyMg== ?q=say%20%22hi%22";
+    assert_eq!(
+        pass(vault.redactor().unwrap(), seen).unwrap(),
+        "Authorization: Basic YWRtaW46[scotoma:pw]g== ?q=[scotoma:key]"
+    );
     let body = r#"{"content":"say \"hi\""}"#;
     assert_eq!(
         pass(vault.redactor().unwrap(), body).unwrap(),
@@ -122,16 +128,13 @@ fn redaction_names_the_secret_and_the_guard_refuses_it() {
     assert!(matches!(caught, Err(Error::Leak(name)) if name == "pw"));
     assert_eq!(
         log(&scratch).split_off(2),
-        ["redact pw - -", "redact key - -", "leak pw - -"]
-    );
-}
-
-#[test]
-fn json_escapes_as_the_serializers_do() {
-    assert_eq!(json("plain"), "plain");
-    assert_eq!(
-        json("\"\\\n\r\t\u{8}\u{c}\u{1}é"),
-        "\\\"\\\\\\n\\r\\t\\b\\f\\u0001é"
+        [
+            "redact pw - -",
+            "redact pw - -",
+            "redact key - -",
+            "redact key - -",
+            "leak pw - -"
+        ]
     );
 }
 

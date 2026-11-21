@@ -6,10 +6,10 @@
 use crate::Error;
 use crate::audit::{Act, Audit};
 use crate::crypt::{self, Secret};
+use crate::forms;
 use crate::grant::Grant;
 use crate::store::{self, Store};
 use crate::table::{Entry, Filter};
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -102,15 +102,15 @@ impl Vault {
         self.redactor().map(|output| (words, output))
     }
 
-    /// What to look for on the way out: every stored value, as stored and as
-    /// it reads inside a JSON string. This is the detector; a looser one
-    /// (partial or transformed values) replaces this table and nothing else.
+    /// What to look for on the way out: every stored value in every form
+    /// `forms::of` knows. That function is the detector; a looser one
+    /// changes it and nothing else.
     fn values(&self) -> Result<Vec<Entry>, Error> {
         let mut entries = Vec::new();
         for (name, value) in self.store.all()? {
-            for find in [json(&value), value] {
+            for find in forms::of(&value) {
                 entries.push(Entry {
-                    find: find.into_bytes(),
+                    find,
                     put: marker(&name),
                     secret: name.clone(),
                 });
@@ -143,27 +143,6 @@ fn allow(grant: &Grant, name: &str) -> Result<(), Error> {
 /// where the value was.
 fn marker(name: &str) -> Vec<u8> {
     format!("[scotoma:{name}]").into_bytes()
-}
-
-/// How a value reads inside a JSON string, as the common serializers write it.
-fn json(value: &str) -> String {
-    let mut out = String::new();
-    for character in value.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            control if control < ' ' => {
-                let _ = write!(out, "\\u{:04x}", u32::from(control));
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// One streaming pass over bytes: substitution, redaction or the guard. A

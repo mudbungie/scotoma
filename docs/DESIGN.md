@@ -130,10 +130,13 @@ Matching is exact, leftmost-longest, on bytes; the table is a sorted array
 walked as a trie.
 
 **The detector is one function.** What counts as "a secret on its way out" is
-the table built by `Vault::values`: today each value exactly, raw and as a
-JSON string. Catching partial or transformed values (base64, hex, a long
-enough fragment) means adding entries to that table, or replacing the matcher
-behind the same flow; no caller changes.
+`forms::of` (`src/forms.rs`): each value as stored, inside a JSON string,
+percent-encoded, and base64 at each of the three alignments it can take inside
+a longer run. Every form is a fixed byte string, so detection stays one linear
+pass whatever is added. A base64 form is the characters the value alone
+decides, and is dropped under eight characters, where it would match by
+chance. Substring or fuzzy matching would replace the matcher behind the same
+flow; no caller changes.
 
 **Streams hold back only what is undecided.** A chunk boundary can fall
 inside a match. Bytes that could still begin an entry are held until the next
@@ -156,8 +159,9 @@ public API, which is the test that the API is sufficient.
 
 ## What this does not solve
 
-- **Transformed values.** Detection is exact. Base64, hex, URL-encoding,
-  reversal, or printing a value one character at a time all pass. Scotoma
+- **Transformed values.** Detection knows a fixed set of forms. Hex, a
+  second layer of encoding, reversal, a fragment, or printing a value one
+  character at a time all pass. Scotoma
   stops accidents and casual exposure, not a model that is trying.
 - **A hostile process running as the user.** The files are ciphertext to it, and
   the socket does nothing with a secret without a grant. It can attach a

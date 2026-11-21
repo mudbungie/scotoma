@@ -140,10 +140,10 @@ fn the_resident_process_runs_the_command_and_hands_back_the_placeholder() {
             format!("err {handle} [scotoma:other]\n")
         )
     );
-    assert_eq!(
-        unlocked.log().split_off(2),
-        ["use pw", "redact pw", "redact pw", "redact other"]
-    );
+    // Stdout and stderr are relayed side by side: their order is not fixed.
+    let mut acts = unlocked.log().split_off(2);
+    acts.sort();
+    assert_eq!(acts, ["redact other", "redact pw", "redact pw", "use pw"]);
 }
 
 #[test]
