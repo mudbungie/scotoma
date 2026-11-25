@@ -7,16 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0]
+
 - **`run` relays input and can be stopped.** `scotoma run` passes its stdin
   to the command; `Scotoma::run` takes the input as a new second argument.
   When the caller goes away, the command and everything it started are
   killed.
 - The gate now compiles the documentation's examples (`make doc`).
-
 - **Detection knows encodings.** Redaction and the guard also catch a value
   percent-encoded and base64-encoded, including inside a longer base64 run
   such as a Basic-auth header.
-
 - **The approver seat.** `unlock` prints an approver token: a grant over
   everything. Its holder answers grant requests (`scotoma pending`,
   `scotoma decide ID yes|no`; `Scotoma::pending`, `Scotoma::decide`) alongside
@@ -29,11 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Storing and removing a secret need a grant** over its name.
 - **Every request is logged**: `request`, then `grant`, `refuse` or
   `abandon`, and `revoke`. A request whose caller hangs up no longer waits.
-
 - **Name placeholders replace UUID handles.** A model writes
   `[scotoma:NAME]`; `issue` (`scotoma issue`, `Scotoma::issue`) is gone. The
   usage log's fifth and sixth columns are now the grant id and a note.
-
 - **Grant limits.** `scotoma grant` / `Scotoma::grant` take comma-joined
   limits in place of a duration: a duration (`1h`), a count of uses (`3x`)
   and `run` (the holder may run commands but `sub` is refused). `1h` means
@@ -41,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Grants minted from a grant.** A grant request that presents a grant is
   answered by it, without asking at the console: the new grant is bound by
   its parent's limits as well as its own. The usage log names the parent in
-  the handle column of the `grant` line.
+  the note of the `grant` line.
 
 ## [0.0.2]
 

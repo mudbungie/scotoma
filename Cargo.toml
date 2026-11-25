@@ -1,6 +1,6 @@
 [package]
 name = "scotoma"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2024"
 description = "A blind spot for agents: store secrets, let a model name them, substitute the value only at execution, and redact it from everything the model could read."
 repository = "https://github.com/mudbungie/scotoma"
